@@ -70,6 +70,7 @@ class Fill:
     price: Decimal
     fee: Decimal         # USDT
     at: float            # unix seconds
+    slippage: Decimal = Decimal("0")   # USDT lost to slippage on this fill (model)
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,7 @@ class SimExchange:
     fee_rate: Decimal = BINANCE_TAKER_FEE
     entry_slippage_pct: Decimal | None = None   # None: the risk config's entry allowance
     exit_slippage_pct: Decimal | None = None    # None: the risk config's stop allowance for the symbol
+    slippage_multiplier: Decimal = Decimal("1")  # backtests double costs with 2
 
     quote: Decimal = field(init=False)
     created_at: float = field(init=False)
@@ -148,6 +150,8 @@ class SimExchange:
             raise ValueError("starting balance must be positive")
         if D(self.fee_rate) < 0:
             raise ValueError("fee rate must not be negative")
+        if D(self.slippage_multiplier) <= 0:
+            raise ValueError("slippage_multiplier must be positive")
         for name in ("entry_slippage_pct", "exit_slippage_pct"):
             v = getattr(self, name)
             if v is not None and D(v) < 0:
@@ -272,7 +276,8 @@ class SimExchange:
 
         intent_id = new_intent_id()
         self.quote -= qty * price + fee
-        fill = Fill(client_order_id(intent_id, "entry"), intent.symbol, "BUY", "ENTRY", qty, price, fee, now)
+        fill = Fill(client_order_id(intent_id, "entry"), intent.symbol, "BUY", "ENTRY", qty, price, fee, now,
+                    slippage=qty * (price - snapshot.best_ask))
         self.fills.append(fill)
         self.positions[intent.symbol] = SimPosition(
             intent_id=intent_id, symbol=intent.symbol, base_asset=rules.base_asset, strategy=intent.strategy,
@@ -335,18 +340,21 @@ class SimExchange:
         slip = self._exit_slippage(pos.symbol)
         if reason == fills.STOP_LOSS:
             price = fills.stop_fill_price(pos.stop_price, observed, slip)
+            before_slip = min(pos.stop_price, observed)
             cid = client_order_id(pos.intent_id, "protect", 0)
         elif reason == fills.TAKE_PROFIT:
-            price = pos.take_profit_price
+            price = before_slip = pos.take_profit_price
             cid = client_order_id(pos.intent_id, "protect", 1)
         else:
             price = fills.sell_fill_price(observed, slip)
+            before_slip = observed
             cid = client_order_id(pos.intent_id, "exit")
         proceeds = pos.qty * price
         fee = fills.taker_fee(proceeds, self.fee_rate)
         self.quote += proceeds - fee
         pnl = proceeds - fee - (pos.qty * pos.entry_price + pos.entry_fee)
-        self.fills.append(Fill(cid, pos.symbol, "SELL", reason, pos.qty, price, fee, now))
+        self.fills.append(Fill(cid, pos.symbol, "SELL", reason, pos.qty, price, fee, now,
+                               slippage=pos.qty * (before_slip - price)))
         trade = ClosedTrade(
             symbol=pos.symbol, strategy=pos.strategy, qty=pos.qty, entry_price=pos.entry_price, exit_price=price,
             exit_reason=reason, entry_fee=pos.entry_fee, exit_fee=fee, pnl=pnl, planned_risk=pos.planned_risk,
@@ -365,7 +373,10 @@ class SimExchange:
             pass        # a held coin has no price yet; the next update marks it
 
     def _entry_slippage(self) -> Decimal:
-        return D(self.entry_slippage_pct) if self.entry_slippage_pct is not None else self.cfg.risk.entry_slippage_pct
+        base = D(self.entry_slippage_pct) if self.entry_slippage_pct is not None else self.cfg.risk.entry_slippage_pct
+        return base * D(self.slippage_multiplier)
 
     def _exit_slippage(self, symbol: str) -> Decimal:
-        return D(self.exit_slippage_pct) if self.exit_slippage_pct is not None else self.cfg.risk.stop_slippage_for(symbol)
+        base = (D(self.exit_slippage_pct) if self.exit_slippage_pct is not None
+                else self.cfg.risk.stop_slippage_for(symbol))
+        return base * D(self.slippage_multiplier)

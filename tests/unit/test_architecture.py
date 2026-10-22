@@ -120,3 +120,23 @@ def test_nothing_outside_the_simulator_opens_a_position():
                 assert n.attr != "_open_position", f"{f} calls _open_position"
             if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "SimPosition":
                 raise AssertionError(f"{f} creates a SimPosition; only SimExchange._open_position may")
+
+
+def test_module4_analysis_and_strategies_are_pure():
+    """Indicators and strategies do no I/O and place no orders: they only propose ideas."""
+    io_modules = NETWORK | {"os", "pathlib", "subprocess", "shutil", "csv", "json"}
+    for pkg in ("analysis", "strategies"):
+        for f in (SRC / pkg).rglob("*.py"):
+            imports = imports_of(f)
+            assert not (imports & io_modules), f"{f} does I/O: {imports & io_modules}"
+            assert not any(m.startswith(("bot.paper", "bot.backtest", "bot.exchange.binance", "bot.execution",
+                                         "bot.news", "bot.llm")) for m in imports), f
+            assert "open(" not in f.read_text(), f
+
+
+def test_module4_backtest_uses_the_venue_interface_not_the_adapter():
+    for f in (SRC / "backtest").rglob("*.py"):
+        imports = imports_of(f)
+        assert "bot.exchange.binance" not in imports, f
+        assert not (imports & NETWORK), f
+        assert not any(m.startswith(("bot.news", "bot.llm", "bot.execution")) for m in imports), f

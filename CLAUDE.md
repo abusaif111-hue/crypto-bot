@@ -49,6 +49,11 @@ into the settings. Rule IDs in code and tests refer to that package.
 - Paper trading (`bot paper run`, `bot.paper.runner`): only the runner changes the paper account;
   the CLI talks to it through request files. A restart restores the account with entries blocked
   and all breakers kept; an unreadable state file stops the runner and is never reset.
+- Backtests: the holdout (2025-10-01 to 2026-10-01, `bot.backtest.periods`) is locked; never read,
+  load or run on it, and never move the dates. Only Sultan runs the holdout command. Strategies
+  (`bot.strategies`) and indicators (`bot.analysis`) are pure, see finished candles only, have at
+  most 3 tunable settings, and only propose `TradeIntent`s; backtests replay them through
+  `SimExchange`, so entries go through `evaluate()`. Results come only from real runs on the server.
 - Every new rule or module ships with tests. Run `pytest` before finishing;
   all tests must pass. Keep the property test at 3,000 examples or more.
 - One module per piece of work, small and reviewable.
@@ -70,6 +75,7 @@ bot paper status
 2. ~~Binance adapter, **read-only**: exchangeInfo, myFilters, commission, balances, klines, book ticker, key permissions~~ (done, module 2: `bot.exchange.binance`, `bot check-binance`)
 3. ~~Market data service + simulated exchange for paper trading (same interface as the adapter)~~ (done, module 3: `bot.market.data`, `bot.paper.sim`)
 4. Backtester (fees, slippage, no look-ahead, walk-forward, locked 12-month holdout) + strategies H1–H3 vs baselines
+   (step 1 done: `bot.backtest` data, replay, engine, metrics, baselines; step 2: strategies + walk-forward; step 3: holdout)
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
 6. Loss-review loop, dashboard (FastAPI, not public), Telegram alerts
 7. News + LLM, advisory/veto only

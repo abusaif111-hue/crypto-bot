@@ -4,6 +4,7 @@
     bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 [--symbol BTCUSDT]
     bot check-binance [--public-only] [--details]
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
+    bot backtest fetch | baselines                        (history and baseline backtests)
 
 `try-trade` runs a proposed trade through the real risk engine with example
 market data and prints the decision in plain language. It sends nothing to Binance.
@@ -267,6 +268,62 @@ def _paper_request(kind: str):
     return handler
 
 
+DEFAULT_DATA_DIR = "~/backtest-data"
+DEFAULT_REPORTS_DIR = "~/backtests"
+
+
+def _backtest_fetch(args: argparse.Namespace, make_exchange=None) -> int:
+    """Download price history through the read-only adapter (public data, no API key)."""
+    from bot.backtest import history
+    from bot.exchange.binance import BinanceReadOnly
+
+    cfg = load_config(args.config)
+    venue = (make_exchange or BinanceReadOnly)(environment="live")
+    data_dir = Path(os.path.expanduser(args.data_dir))
+    ok = True
+    for symbol in args.symbols or cfg.universe:
+        try:
+            res = history.fetch(venue, data_dir, symbol, args.interval)
+            print(f"{symbol} {args.interval}: {history.describe(res, args.interval)}")
+            for a, b in res.gaps[:5]:
+                print(f"    gap after {time.strftime('%Y-%m-%d %H:%M', time.gmtime(a / 1000))} UTC, "
+                      f"next candle {time.strftime('%Y-%m-%d %H:%M', time.gmtime(b / 1000))} UTC")
+            if len(res.gaps) > 5:
+                print(f"    ... and {len(res.gaps) - 5} more gaps")
+        except Exception as e:
+            ok = False
+            print(f"{symbol} {args.interval}: FAILED: {e}", file=sys.stderr)
+    print(f"Saved in {data_dir}. The holdout (from 2025-10-01) is stored but stays locked.")
+    return 0 if ok else 4
+
+
+def _backtest_baselines(args: argparse.Namespace, out=None) -> int:
+    from bot.backtest import history, report
+
+    cfg = load_config(args.config)
+    data_dir = Path(os.path.expanduser(args.data_dir))
+    out = out or sys.stdout
+    try:
+        candles = {s: history.load(data_dir, s, args.interval) for s in cfg.universe}
+        rules = {s: history.load_rules(data_dir, s) for s in cfg.universe}
+    except history.DataError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+
+    def progress(i, n):
+        if i == n or i % 20 == 0:
+            out.write(f"  random entries: {i} of {n} runs\n")
+            out.flush()
+
+    out.write(f"Running baselines on {', '.join(cfg.universe)} ({args.interval}), {args.seeds} random runs...\n")
+    results = report.run_baselines(candles, rules, cfg, seeds=args.seeds, progress=progress)
+    meta = report.provenance(cfg, candles, report.CostModel())
+    folder = report.write(Path(os.path.expanduser(args.reports_dir)), "baselines", results, meta)
+    out.write(report.render(results, meta))
+    out.write(f"\nReport saved in {folder}\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="bot")
     p.add_argument("--config", default="config/default.yaml")
@@ -303,8 +360,20 @@ def main(argv: list[str] | None = None) -> int:
             q.add_argument("--hours", type=int, default=72, help="time stop: sell after this many hours")
     for q in psub.choices.values():
         q.add_argument("--state-dir", default=DEFAULT_PAPER_DIR, help="where the paper account is kept")
+    bp = sub.add_parser("backtest", help="price history and backtests (research period only; holdout locked)")
+    bsub = bp.add_subparsers(dest="backtest_cmd", required=True)
+    bf = bsub.add_parser("fetch", help="download price history through the read-only adapter")
+    bf.add_argument("--symbols", nargs="*", default=None, help="default: the config universe")
+    bb = bsub.add_parser("baselines", help="cash, buy-and-hold, 50/50 and random entries on the research period")
+    bb.add_argument("--seeds", type=int, default=200, help="number of random-entry runs")
+    bb.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
+    for q in bsub.choices.values():
+        q.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
+        q.add_argument("--interval", default="4h", choices=["4h"])
     args = p.parse_args(argv)
     try:
+        if args.cmd == "backtest":
+            return {"fetch": _backtest_fetch, "baselines": _backtest_baselines}[args.backtest_cmd](args)
         if args.cmd == "paper":
             return {"run": _paper_run, "status": _paper_status, "resume": _paper_request("resume"),
                     "block": _paper_request("block"), "trade": _paper_request("trade")}[args.paper_cmd](args)
