@@ -75,4 +75,4 @@ set_var BINANCE_PRIVATE_KEY_PATH "$KEY_FILE"
 unset API_KEY
 
 echo "Saved. $ENV_FILE is readable only by this user and is never uploaded to GitHub."
-echo "The key is stored but not used until the read-only Binance connection (module 2) is installed."
+echo "Next: run  bot check-binance  to confirm the key is read-only and working."
