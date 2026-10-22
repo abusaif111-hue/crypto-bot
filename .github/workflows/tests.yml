@@ -1,0 +1,31 @@
+name: tests
+
+# Runs the full test suite (risk rules, property tests, architecture checks)
+# on every push and pull request. A red result means a change broke a rule.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Refuse committed secrets
+        run: |
+          if git ls-files | grep -E '(^|/)\.env$|\.pem$|\.key$'; then
+            echo "A secrets file is committed. Remove it and rotate the key."; exit 1
+          fi
+      - name: Run tests
+        run: pytest
+      - name: Default config stays safe
+        run: bot check-config | tee out.txt && grep -q "live_trading=False" out.txt

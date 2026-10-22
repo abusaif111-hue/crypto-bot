@@ -1,0 +1,27 @@
+[project]
+name = "sultan-crypto-bot"
+version = "0.1.0"
+description = "Risk-first Binance Spot trading bot (module 1: core, risk engine, accounting)"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7,<3",
+    "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "hypothesis>=6.100"]
+
+[project.scripts]
+bot = "bot.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+addopts = "-q"
