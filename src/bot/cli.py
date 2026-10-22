@@ -2,6 +2,8 @@
 
     bot check-config [--config config/default.yaml]
     bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 [--symbol BTCUSDT]
+    bot check-binance [--public-only] [--details]
+    bot paper run | status | resume | block | trade      (paper trading, simulated money only)
 
 `try-trade` runs a proposed trade through the real risk engine with example
 market data and prints the decision in plain language. It sends nothing to Binance.
@@ -9,8 +11,12 @@ market data and prints the decision in plain language. It sends nothing to Binan
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import sys
+import time
 from decimal import Decimal
+from pathlib import Path
 
 from bot.core.config import load_config
 from bot.exchange.filters import parse_symbol
@@ -140,6 +146,126 @@ def _check_binance(args: argparse.Namespace, make_exchange=None, load_creds=None
     return 0 if ok else 4
 
 
+DEFAULT_PAPER_DIR = "~/paper"
+PAPER_GATE_WEEKS, PAPER_GATE_TRADES, PAPER_GATE_PROFITABLE = 8, 30, 5
+
+
+def _paper_dir(args: argparse.Namespace) -> Path:
+    return Path(os.path.expanduser(args.state_dir))
+
+
+def _paper_run(args: argparse.Namespace, make_exchange=None, out=None) -> int:
+    """Run paper trading until stopped. Reads live prices (no API key needed); moves only simulated money."""
+    from bot.exchange.binance import BinanceReadOnly
+    from bot.paper.runner import PaperRunner, RunnerLock, RunnerLocked
+    from bot.paper.store import StateError
+
+    cfg = load_config(args.config)
+    if cfg.environment.value not in ("paper", "sim") or cfg.live_trading:
+        print(f"Error: paper trading needs environment paper or sim (config says {cfg.environment.value})",
+              file=sys.stderr)
+        return 2
+    state_dir = _paper_dir(args)
+    market = (make_exchange or BinanceReadOnly)(environment=_binance_host_for(cfg.environment.value))
+    try:
+        with RunnerLock(state_dir):
+            runner = PaperRunner.open(state_dir, cfg, market, out=out or sys.stdout)
+
+            def stop(signum, frame):
+                runner.stop_requested = True
+
+            old = {s: signal.signal(s, stop) for s in (signal.SIGTERM, signal.SIGINT)}
+            try:
+                runner.run(interval_s=args.interval, max_ticks=args.ticks)
+            finally:
+                for s, h in old.items():
+                    signal.signal(s, h)
+    except (RunnerLocked, StateError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _runner_active(state_dir: Path) -> bool:
+    from bot.paper.runner import LOCK_FILE, RunnerLock, RunnerLocked
+
+    if not (state_dir / LOCK_FILE).exists():
+        return False
+    try:
+        with RunnerLock(state_dir):
+            return False
+    except RunnerLocked:
+        return True
+
+
+def _paper_status(args: argparse.Namespace) -> int:
+    import json
+
+    from bot.paper import store
+    from bot.paper.runner import STATE_FILE
+
+    cfg = load_config(args.config)
+    state_dir = _paper_dir(args)
+    path = state_dir / STATE_FILE
+    if not path.exists():
+        print(f"No paper account yet in {state_dir}. Start one with: bot paper run")
+        return 1
+    data = json.loads(path.read_text())
+    sim = store.from_dict(data, cfg, market=None, clock=lambda: data["saved_at"])
+    D = Decimal
+    equity = sim.equity()
+    start = sim.starting_quote
+    trades = sim.trades
+    wins = sum(1 for t in trades if t.pnl > 0)
+    fees = sum((f.fee for f in sim.fills), D(0))
+    days = (data["saved_at"] - sim.created_at) / 86400
+    saved = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(data["saved_at"]))
+    print(f"Paper account in {state_dir} (simulated money only)")
+    print(f"Runner: {'running' if _runner_active(state_dir) else 'NOT running'}; last saved {saved}")
+    print(f"Mode: {sim.modes.mode.value}" + (f"; active breakers: {', '.join(sorted(sim.modes.active_breaches))}"
+                                              if sim.modes.active_breaches else ""))
+    print(f"Equity {equity:.2f} USDT (started {start:.2f}, {(equity - start) / start * 100:+.2f}%), "
+          f"cash {sim.quote:.2f}, drawdown {sim.index.drawdown_pct:.2f}%")
+    print(f"Today {sim.periods.daily_pnl(equity):+.2f} USDT, this week {sim.periods.weekly_pnl(equity):+.2f} USDT; "
+          f"fees paid {fees:.2f} USDT")
+    if sim.positions:
+        print("Open positions:")
+        for p in sim.positions.values():
+            bid = sim._bids[p.symbol]
+            print(f"  {p.symbol} {p.qty} bought {p.entry_price:.2f}, now {bid:.2f}, stop {p.stop_price}, "
+                  f"target {p.take_profit_price}, unrealised {p.qty * bid - p.qty * p.entry_price - p.entry_fee:+.2f}")
+    else:
+        print("Open positions: none")
+    print(f"Closed trades: {len(trades)} ({wins} profitable), total P&L "
+          f"{sum((t.pnl for t in trades), D(0)):+.2f} USDT")
+    print(f"Paper review gate: {days:.1f} of {PAPER_GATE_WEEKS * 7} days, {len(trades)} of {PAPER_GATE_TRADES} trades, "
+          f"{wins} of {PAPER_GATE_PROFITABLE} profitable (rule violations are reviewed separately)")
+    return 0
+
+
+def _paper_request(kind: str):
+    def handler(args: argparse.Namespace) -> int:
+        from bot.paper.runner import write_request
+
+        if not args.operator.strip() or len(args.reason.strip()) < 10:
+            print("Error: give your name with --operator and a reason of 10+ characters with --reason",
+                  file=sys.stderr)
+            return 2
+        payload = {"operator": args.operator, "reason": args.reason}
+        if kind == "trade":
+            payload.update(symbol=args.symbol, entry=args.entry, stop=args.stop, target=args.target,
+                           hours=args.hours, invalidation=args.reason, strategy="manual")
+        state_dir = _paper_dir(args)
+        write_request(state_dir, kind, **payload)
+        print(f"Request '{kind}' queued for the paper runner in {state_dir}.")
+        if kind == "trade":
+            print("It still goes through the risk engine; see the result in: bot paper status, or journal.jsonl")
+        if not _runner_active(state_dir):
+            print("Note: the paper runner is not running; the request waits until it starts.")
+        return 0
+    return handler
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="bot")
     p.add_argument("--config", default="config/default.yaml")
@@ -156,8 +282,31 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("check-binance", help="read-only connection check: key permissions, prices, rules, balances")
     c.add_argument("--public-only", action="store_true", help="skip everything that needs the API key")
     c.add_argument("--details", action="store_true", help="list each balance instead of the total only")
+    pp = sub.add_parser("paper", help="paper trading on live prices with simulated money")
+    psub = pp.add_subparsers(dest="paper_cmd", required=True)
+    pr = psub.add_parser("run", help="run paper trading until stopped (used by the bot-paper service)")
+    pr.add_argument("--interval", type=float, default=5.0, help="seconds between price checks")
+    pr.add_argument("--ticks", type=int, default=None, help=argparse.SUPPRESS)
+    psub.add_parser("status", help="balances, positions, trades and progress toward the paper review")
+    for name, help_ in (("resume", "allow new entries (refused while a breaker is active)"),
+                        ("block", "block new entries; exits keep working"),
+                        ("trade", "submit a manual trade idea; it goes through the risk engine")):
+        q = psub.add_parser(name, help=help_)
+        q.add_argument("--operator", required=True)
+        q.add_argument("--reason", required=True, help="10+ characters; for trade, the invalidation condition")
+        if name == "trade":
+            q.add_argument("--symbol", default="BTCUSDT")
+            q.add_argument("--entry", required=True)
+            q.add_argument("--stop", required=True)
+            q.add_argument("--target", required=True)
+            q.add_argument("--hours", type=int, default=72, help="time stop: sell after this many hours")
+    for q in psub.choices.values():
+        q.add_argument("--state-dir", default=DEFAULT_PAPER_DIR, help="where the paper account is kept")
     args = p.parse_args(argv)
     try:
+        if args.cmd == "paper":
+            return {"run": _paper_run, "status": _paper_status, "resume": _paper_request("resume"),
+                    "block": _paper_request("block"), "trade": _paper_request("trade")}[args.paper_cmd](args)
         return {"check-config": _check_config, "try-trade": _try_trade,
                 "check-binance": _check_binance}[args.cmd](args)
     except ValueError as e:

@@ -72,6 +72,7 @@ PUBLIC = {
     "/api/v3/ticker/24hr": fx("ticker_24hr.json"),
     "/api/v3/depth": fx("depth_btc.json"),
     "/api/v3/klines": fx("klines_btc_1d.json"),
+    "/api/v3/avgPrice": {"mins": 5, "price": "82010.11000000", "closeTime": 1792667463000},  # documented shape
 }
 SIGNED = {
     "/sapi/v1/account/apiRestrictions": SAFE_PERMS,
@@ -234,3 +235,11 @@ def test_sdk_signs_with_openssl_ed25519_key(tmp_path):
     eddsa.new(pub, "rfc8032").verify(message, sig)            # raises if the signature is wrong
     with pytest.raises(ExchangeError):
         client._call("/api/v3/order", "POST", {}, signed=True)  # the wrapper itself refuses non-GET
+
+
+def test_avg_price_is_a_public_read():
+    client = FakeClient(PUBLIC)
+    ex = BinanceReadOnly(public_client=client, _sleep=lambda s: None)
+    assert ex.avg_price("BTCUSDT") == Dec("82010.11")
+    assert client.calls[-1] == ("/api/v3/avgPrice", False, {"symbol": "BTCUSDT"})
+    assert READ_ENDPOINTS["/api/v3/avgPrice"] is False

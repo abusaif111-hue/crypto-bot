@@ -29,3 +29,10 @@ else
   echo "(no .env yet: checking public market data only; run scripts/make_binance_key.sh to add the key)"
   bot check-binance --public-only
 fi
+
+if systemctl is-enabled bot-paper >/dev/null 2>&1; then
+  echo
+  echo "==> The paper-trading service is still running the old code. To load the new code, as root run:"
+  echo "    systemctl restart bot-paper"
+  echo "    (after a restart, new entries stay blocked until: bot paper resume --operator NAME --reason \"...\")"
+fi
