@@ -201,6 +201,7 @@ def _runner_active(state_dir: Path) -> bool:
 def _paper_status(args: argparse.Namespace) -> int:
     import json
 
+    from bot.core.money import fmt
     from bot.paper import store
     from bot.paper.runner import STATE_FILE
 
@@ -232,8 +233,8 @@ def _paper_status(args: argparse.Namespace) -> int:
         print("Open positions:")
         for p in sim.positions.values():
             bid = sim._bids[p.symbol]
-            print(f"  {p.symbol} {p.qty} bought {p.entry_price:.2f}, now {bid:.2f}, stop {p.stop_price}, "
-                  f"target {p.take_profit_price}, unrealised {p.qty * bid - p.qty * p.entry_price - p.entry_fee:+.2f}")
+            print(f"  {p.symbol} {fmt(p.qty)} bought {fmt(p.entry_price)}, now {fmt(bid)}, stop {fmt(p.stop_price)}, "
+                  f"target {fmt(p.take_profit_price)}, unrealised {p.qty * bid - p.qty * p.entry_price - p.entry_fee:+.2f}")
     else:
         print("Open positions: none")
     print(f"Closed trades: {len(trades)} ({wins} profitable), total P&L "

@@ -34,7 +34,7 @@ from typing import Callable
 
 from bot.core.config import AppConfig
 from bot.core.ids import client_order_id, new_intent_id
-from bot.core.money import ZERO, D, pct
+from bot.core.money import ZERO, D, fmt, pct
 from bot.exchange.filters import SymbolRules
 from bot.exchange.interface import Book, Candle, SpotReadVenue
 from bot.market.data import MarketDataService, MarketDataUnavailable
@@ -265,7 +265,7 @@ class SimExchange:
             return EntryResult(decision, False, reason="not filled: the ask is already at or below the stop")
         if price > worst_entry:
             return EntryResult(decision, False,
-                               reason=f"not filled: fill price {price} is above the worst planned entry {worst_entry}")
+                               reason=f"not filled: fill price {fmt(price)} is above the worst planned entry {fmt(worst_entry)}")
         fee = fills.taker_fee(qty * price, self.fee_rate)
         if qty * price + fee > self.quote:
             return EntryResult(decision, False, reason="not filled: not enough simulated USDT")
@@ -282,7 +282,7 @@ class SimExchange:
         )
         self._bids[intent.symbol] = snapshot.best_bid
         self.account_state(now)
-        return EntryResult(decision, True, fill, reason=f"filled {qty} {intent.symbol} at {price}")
+        return EntryResult(decision, True, fill, reason=f"filled {fmt(qty)} {intent.symbol} at {fmt(price)}")
 
     # ------------------------------------------------------------ exits
     def poll(self, now: float | None = None) -> list[ClosedTrade]:

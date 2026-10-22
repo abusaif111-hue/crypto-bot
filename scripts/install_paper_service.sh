@@ -46,6 +46,8 @@ ReadWritePaths=$STATE_DIR
 WantedBy=multi-user.target
 EOF
 
+install -m 755 "$BOT_HOME/crypto-bot/scripts/paper" /usr/local/bin/paper
+
 systemctl daemon-reload
 systemctl enable --now bot-paper
 sleep 3
@@ -53,11 +55,9 @@ systemctl --no-pager --lines=5 status bot-paper || true
 cat <<EOF
 
 Paper trading is running as the service "bot-paper" (simulated money only).
-New entries start BLOCKED. To allow them (as the bot user):
-    su - $BOT_USER
-    cd ~/crypto-bot && . .venv/bin/activate
-    bot paper resume --operator YOUR_NAME --reason "start paper trading"
-    bot paper status
-Service log (as root):   journalctl -u bot-paper -f
+New entries start BLOCKED. To allow them, type (as root is fine):
+    paper resume --operator YOUR_NAME --reason "start paper trading"
+    paper status
+Service log:             paper log
 Stop / start (as root):  systemctl stop bot-paper  /  systemctl start bot-paper
 EOF

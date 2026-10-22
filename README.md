@@ -34,7 +34,7 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-pytest                              # 172 tests, about 20 seconds
+pytest                              # 174 tests, about 20 seconds
 bot check-config
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 --loss-today 150
@@ -84,21 +84,24 @@ data, and prints whether it is accepted, the size, the worst planned loss and wh
    bash /home/bot/crypto-bot/scripts/install_paper_service.sh
    ```
    It needs no API key: paper trading reads Binance's public prices and moves only
-   simulated money. New entries start blocked; allow them as the `bot` user:
+   simulated money. It also installs a short `paper` command you can type as root.
+   New entries start blocked; allow them and check on it with:
    ```bash
-   su - bot
-   cd ~/crypto-bot && . .venv/bin/activate
-   bot paper resume --operator Sultan --reason "start paper trading"
-   bot paper status
+   paper resume --operator Sultan --reason "start paper trading"
+   paper status
+   paper trade --operator Sultan --reason "test idea" --entry 82000 --stop 80000 --target 87000 --hours 72
+   paper log
    ```
-   Live log (as root): `journalctl -u bot-paper -f`. Full record of every decision and
-   trade: `/home/bot/paper/journal.jsonl`.
+   `paper` always runs as the `bot` user. The full record of every decision and trade
+   is `/home/bot/paper/journal.jsonl`.
 
 ## Update the server after new code is pushed
 
 As the `bot` user: `bash ~/crypto-bot/scripts/update_bot.sh` (downloads, installs,
 runs the tests, then the read-only Binance check). If paper trading runs as a service,
-restart it as root afterwards (`systemctl restart bot-paper`) and resume entries again.
+restart it as root afterwards (`systemctl restart bot-paper`) and resume entries again
+(`paper resume ...`). To pick up a new version of the `paper` command itself, run
+`install_paper_service.sh` again; it keeps the paper account.
 
 ## How a trade is sized
 

@@ -1,7 +1,7 @@
 """Exact decimal helpers. Money and quantities never use floats."""
 from __future__ import annotations
 
-from decimal import ROUND_DOWN, ROUND_UP, Decimal, getcontext
+from decimal import ROUND_DOWN, ROUND_HALF_UP, ROUND_UP, Decimal, getcontext
 
 getcontext().prec = 40
 
@@ -47,3 +47,16 @@ def ceil_price(value: Decimal, tick: Decimal) -> Decimal:
 
 def is_multiple(value: Decimal, step: Decimal) -> bool:
     return D(step) > 0 and D(value) % D(step) == 0
+
+
+def fmt(value: object) -> str:
+    """Short form for people to read (logs, status). Never used in calculations.
+
+    1 and above: 2 decimals (81754.87). Below 1: 6 significant digits (0.0096, 0.784847).
+    """
+    v = D(value)
+    if v.is_nan() or v.is_infinite():
+        return str(v)
+    if abs(v) >= ONE or v == 0:
+        return str(v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    return f"{v.normalize():.6g}"

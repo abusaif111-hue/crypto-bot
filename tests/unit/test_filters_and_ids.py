@@ -53,3 +53,15 @@ def test_T_EXEC_020_client_ids_are_deterministic_and_valid():
     assert a == b and is_valid_client_id(a) and len(a) <= 36
     assert client_order_id(i, "protect") != a
     assert client_order_id(uuid.uuid4(), "entry") != a
+
+
+def test_fmt_is_short_and_for_display_only():
+    from decimal import Decimal as Dec
+
+    from bot.core.money import fmt
+
+    assert fmt(Dec("81754.867005000000")) == "81754.87"
+    assert fmt(Dec("87000.000")) == "87000.00"
+    assert fmt(Dec("0.00960000")) == "0.0096"
+    assert fmt(Dec("0.78484672324800000000000")) == "0.784847"
+    assert fmt(Dec("0")) == "0.00" and fmt(Dec("-1.385")) == "-1.39"
