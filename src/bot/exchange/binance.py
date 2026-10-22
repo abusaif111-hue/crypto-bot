@@ -20,6 +20,7 @@ from typing import Any, Callable, Protocol
 from bot.core.money import ZERO, D
 from bot.exchange.credentials import Credentials
 from bot.exchange.filters import SymbolRules, parse_symbol
+from bot.exchange.interface import Book, Candle  # noqa: F401  (re-exported)
 from bot.portfolio.accounting import Balance
 
 HOSTS = {
@@ -35,6 +36,7 @@ READ_ENDPOINTS: dict[str, bool] = {
     "/api/v3/ticker/24hr": False,
     "/api/v3/depth": False,
     "/api/v3/klines": False,
+    "/api/v3/avgPrice": False,
     "/api/v3/account": True,
     "/api/v3/account/commission": True,
     "/api/v3/myFilters": True,
@@ -70,30 +72,6 @@ class _Client(Protocol):
     def send_request(self, endpoint: str, method: str, query_params: dict | None = None) -> _Response: ...
 
     def send_signed_request(self, endpoint: str, method: str, query_params: dict | None = None) -> _Response: ...
-
-
-@dataclass(frozen=True)
-class Candle:
-    open_time: int
-    open: Decimal
-    high: Decimal
-    low: Decimal
-    close: Decimal
-    volume: Decimal
-    close_time: int
-    quote_volume: Decimal
-    closed: bool
-
-
-@dataclass(frozen=True)
-class Book:
-    bid: Decimal
-    ask: Decimal
-
-    @property
-    def spread_pct(self) -> Decimal:
-        mid = (self.bid + self.ask) / 2
-        return (self.ask - self.bid) / mid * 100 if mid > 0 else Decimal("Infinity")
 
 
 @dataclass(frozen=True)
@@ -222,6 +200,10 @@ class BinanceReadOnly:
             return ZERO
         cap = asks[0][0] * (1 + within_pct / 100)
         return sum((p * q for p, q in asks if p <= cap), ZERO)
+
+    def avg_price(self, symbol: str) -> Decimal:
+        """Binance's 5-minute average price: the reference for PERCENT_PRICE_BY_SIDE."""
+        return D(self._get("/api/v3/avgPrice", {"symbol": symbol})["price"])
 
     def klines(self, symbol: str, interval: str, start_ms: int | None = None, end_ms: int | None = None,
                limit: int = 500) -> list[Candle]:

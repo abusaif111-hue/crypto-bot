@@ -1,7 +1,8 @@
 # Crypto bot
 
 A risk-first Binance Spot trading bot, built module by module from the Stage 1 design
-package. Modules 1 (risk foundation) and 2 (read-only Binance connection) are done:
+package. Modules 1 (risk foundation), 2 (read-only Binance connection) and 3 (market data
+and paper-trading simulator) are done:
 
 | Part | Folder | What it does |
 | --- | --- | --- |
@@ -13,8 +14,12 @@ package. Modules 1 (risk foundation) and 2 (read-only Binance connection) are do
 | Client order IDs | `src/bot/core/ids.py` | Deterministic IDs so a retried order can never be placed twice |
 | Binance connection, read-only | `src/bot/exchange/binance.py` | Reads prices, exchange rules, fees, balances and the API key's own permissions through Binance's official SDK; can only send GET requests to a fixed list of read endpoints |
 | Credentials | `src/bot/exchange/credentials.py` | Loads the API key and key file path from `.env`; refuses files other users can read; never prints the key |
+| Venue interface | `src/bot/exchange/interface.py` | The read methods every venue offers; the real adapter and the simulator both implement it |
+| Market data service | `src/bot/market/data.py` | Builds the price, spread, volume, depth, data-age and clock-skew snapshot the risk engine needs; any failure blocks new entries |
+| Paper-trading simulator | `src/bot/paper/sim.py`, `src/bot/paper/fills.py` | Simulated exchange with 10,000 USDT of simulated money; every entry goes through the risk engine; fills pay the 0.1% taker fee and slippage; exits by simulated stop-loss, take-profit and time stop |
 
 **The bot cannot trade yet.** It reads from Binance but has no code that sends orders.
+The paper-trading simulator only moves simulated money inside the program.
 Order sending comes in a later module, behind this risk engine, and only after testnet
 and paper trading.
 
@@ -28,7 +33,7 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-pytest                              # 68 tests, about 20 seconds
+pytest                              # 147 tests, about 20 seconds
 bot check-config
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 --loss-today 150
@@ -85,6 +90,30 @@ runs the tests, then the read-only Binance check).
 5. If the result is below Binance's minimum order, the trade is skipped. Size is
    never rounded up and the risk limit is never raised to make a trade fit.
 
+## How paper trading fills orders
+
+The simulator (`SimExchange`) reads real prices through the read-only adapter but keeps
+its own balances, starting at 10,000 USDT. It starts with entries blocked, like the real
+bot; `resume(operator, reason)` allows them.
+
+- **Entry:** `submit(intent)` is the only way in. It builds the account state, gets a
+  market snapshot and calls the risk engine; a rejected idea changes nothing. An accepted
+  one fills immediately in full or not at all, at the ask plus 0.05% slippage. If that
+  is above the worst entry price the risk engine sized for, or the ask is already at or
+  below the stop, nothing is bought.
+- **Exits:** a simulated stop-loss and take-profit for the full quantity, placed as soon
+  as the entry fills; when one fills the other is cancelled. The stop sells at the stop
+  (or the lower price, if price jumped past it) minus 0.5% for BTC or 1.0% for ETH. The
+  take-profit sells at its price. When the trade's holding time runs out, it sells at
+  the bid minus the same slippage.
+- **Candles:** if one candle touches both the stop and the target, the stop is assumed
+  to have filled first. Candles that started before the entry, and unfinished candles,
+  are ignored.
+- **Fees:** 0.1% taker fee on every buy and sell, charged in USDT. Real Binance takes
+  a buy's fee from the coin received unless fees are paid in BNB; module 5 must handle
+  that (verify on testnet).
+- The simulated account is held in memory only for now; a restart loses it.
+
 ## What is tested
 
 - Every rule has a worked example (`tests/unit/test_risk_engine.py`).
@@ -97,6 +126,12 @@ runs the tests, then the read-only Binance check).
   config flag and the typed phrase in `BOT_LIVE_CONFIRM`.
 - Architecture: no wallet, withdrawal or transfer code exists; the risk and
   accounting code makes no network calls and cannot import the news or AI modules.
+- Paper trading: every simulated entry calls the risk engine (checked by a spy and by
+  reading the source); fees, slippage, gaps, take-profit, time stop and same-candle cases
+  have worked examples; breakers block entries. A property test runs 400 random trade
+  plans and price paths (about 600 closed trades) and checks that balances never go
+  negative, every fill pays exactly 0.1%, the cash adds up, and a stop that did not gap
+  never loses more than the risk engine planned.
 
 ## Settings you may want to change
 
@@ -109,7 +144,6 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
 
 ## Next modules
 
-3. Market data service and paper-trading simulator
 4. Backtesting engine and the three candidate strategies
 5. Order execution with protection checks and reconciliation
 6. Dashboard and Telegram alerts
