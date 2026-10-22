@@ -118,7 +118,7 @@ class EntryResult:
     reason: str = ""
 
 
-def _dt(t: float) -> datetime:
+def as_utc(t: float) -> datetime:
     return datetime.fromtimestamp(t, timezone.utc)
 
 
@@ -133,6 +133,7 @@ class SimExchange:
     exit_slippage_pct: Decimal | None = None    # None: the risk config's stop allowance for the symbol
 
     quote: Decimal = field(init=False)
+    created_at: float = field(init=False)
     positions: dict[str, SimPosition] = field(init=False, default_factory=dict)
     fills: list[Fill] = field(init=False, default_factory=list)
     trades: list[ClosedTrade] = field(init=False, default_factory=list)
@@ -152,11 +153,12 @@ class SimExchange:
             if v is not None and D(v) < 0:
                 raise ValueError(f"{name} must not be negative")
         self.quote = D(self.starting_quote)
+        self.created_at = self.clock()
         self.fee_rate = D(self.fee_rate)
         self.data = MarketDataService(self.market, self.cfg, self.clock)
         self.modes = ModeController(self.cfg)          # starts ENTRIES_BLOCKED, like the real bot
         self.index.start(self.quote)
-        self.periods.update(_dt(self.clock()), self.quote)
+        self.periods.update(as_utc(self.clock()), self.quote)
 
     # ------------------------------------------------------------ SpotReadVenue
     def server_time_ms(self) -> int:
@@ -218,20 +220,20 @@ class SimExchange:
         """Mark equity (P&L periods, drawdown, breakers) and return the state the risk engine sees."""
         now = self.clock() if now is None else now
         equity = self.equity()
-        events = self.periods.update(_dt(now), equity)
+        events = self.periods.update(as_utc(now), equity)
         self.index.mark(equity)
         state = self._state(equity)
         if "day" in events:
-            self.modes.on_day_rollover(state, _dt(now))
+            self.modes.on_day_rollover(state, as_utc(now))
         if "week" in events:
             self.modes.on_week_rollover(state)
-        self.modes.on_state(state, _dt(now))
+        self.modes.on_state(state, as_utc(now))
         return self._state(equity)
 
     def resume(self, operator: str, reason: str, now: float | None = None) -> None:
         """Allow entries. Same rules as the real bot: a name, a reason, and no active breach."""
         now = self.clock() if now is None else now
-        self.modes.resume(operator, reason, self.account_state(now), _dt(now))
+        self.modes.resume(operator, reason, self.account_state(now), as_utc(now))
 
     # ------------------------------------------------------------ entries
     def submit(self, intent: TradeIntent, now: float | None = None) -> EntryResult:

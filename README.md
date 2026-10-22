@@ -17,6 +17,7 @@ and paper-trading simulator) are done:
 | Venue interface | `src/bot/exchange/interface.py` | The read methods every venue offers; the real adapter and the simulator both implement it |
 | Market data service | `src/bot/market/data.py` | Builds the price, spread, volume, depth, data-age and clock-skew snapshot the risk engine needs; any failure blocks new entries |
 | Paper-trading simulator | `src/bot/paper/sim.py`, `src/bot/paper/fills.py` | Simulated exchange with 10,000 USDT of simulated money; every entry goes through the risk engine; fills pay the 0.1% taker fee and slippage; exits by simulated stop-loss, take-profit and time stop |
+| Paper-trading runner | `src/bot/paper/runner.py`, `src/bot/paper/store.py` | `bot paper run` checks live prices every 5 seconds, fills simulated exits, logs every decision and trade, and saves the account after every check so restarts lose nothing |
 
 **The bot cannot trade yet.** It reads from Binance but has no code that sends orders.
 The paper-trading simulator only moves simulated money inside the program.
@@ -33,12 +34,19 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-pytest                              # 147 tests, about 20 seconds
+pytest                              # 172 tests, about 20 seconds
 bot check-config
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 --loss-today 150
 bot check-binance --public-only     # live prices and rules, no key needed
 bot check-binance                   # also checks your key is read-only, then reads fees and balances
+
+bot paper run                       # paper trading on live prices, simulated money (Ctrl+C stops it)
+bot paper status                    # balances, positions, trades, progress toward the paper review
+bot paper resume --operator Sultan --reason "start paper trading"
+bot paper trade --operator Sultan --reason "test idea: breakout above range" \
+    --entry 80000 --stop 78000 --target 86000 --hours 72
+bot paper block --operator Sultan --reason "pause new entries for news"
 ```
 
 `check-binance` stops with exit code 3 if the API key can trade, withdraw or is not
@@ -70,10 +78,27 @@ data, and prints whether it is accepted, the size, the worst planned loss and wh
    paste back in `.env`. Give the key **Enable Reading** only and restrict it to
    the server's IP.
 
+4. Start paper trading as a service that runs all the time and restarts after a crash or
+   reboot (as root):
+   ```bash
+   bash /home/bot/crypto-bot/scripts/install_paper_service.sh
+   ```
+   It needs no API key: paper trading reads Binance's public prices and moves only
+   simulated money. New entries start blocked; allow them as the `bot` user:
+   ```bash
+   su - bot
+   cd ~/crypto-bot && . .venv/bin/activate
+   bot paper resume --operator Sultan --reason "start paper trading"
+   bot paper status
+   ```
+   Live log (as root): `journalctl -u bot-paper -f`. Full record of every decision and
+   trade: `/home/bot/paper/journal.jsonl`.
+
 ## Update the server after new code is pushed
 
 As the `bot` user: `bash ~/crypto-bot/scripts/update_bot.sh` (downloads, installs,
-runs the tests, then the read-only Binance check).
+runs the tests, then the read-only Binance check). If paper trading runs as a service,
+restart it as root afterwards (`systemctl restart bot-paper`) and resume entries again.
 
 ## How a trade is sized
 
@@ -112,7 +137,21 @@ bot; `resume(operator, reason)` allows them.
 - **Fees:** 0.1% taker fee on every buy and sell, charged in USDT. Real Binance takes
   a buy's fee from the coin received unless fees are paid in BNB; module 5 must handle
   that (verify on testnet).
-- The simulated account is held in memory only for now; a restart loses it.
+- **Saving:** the runner saves the account to `~/paper/state.json` after every check
+  (written to a temporary file first, so a crash mid-save keeps the last good copy).
+  A file it cannot read stops the runner; it is never replaced by a fresh account.
+- **After a restart** new entries stay blocked until you run `bot paper resume`, and any
+  breaker that was active stays active: restarting never clears a breaker. Exits keep
+  working while entries are blocked.
+- **If prices stop arriving**, entries are rejected and the outage is logged once. Exits
+  are checked again as soon as prices return; a stop that was passed meanwhile fills at
+  the price seen then and is marked as gapped.
+- **Commands while it runs:** `resume`, `block` and `trade` leave a request file that the
+  runner picks up within seconds; only the runner changes the account. A manual `trade`
+  goes through the risk engine like any other idea. A second runner on the same account
+  is refused.
+- **No strategy yet:** strategies H1–H3 come with the backtester (module 4). Until then
+  paper trading only makes the trades you submit with `bot paper trade`.
 
 ## What is tested
 
@@ -132,6 +171,9 @@ bot; `resume(operator, reason)` allows them.
   plans and price paths (about 600 closed trades) and checks that balances never go
   negative, every fill pays exactly 0.1%, the cash adds up, and a stop that did not gap
   never loses more than the risk engine planned.
+- Paper runner: saving and restoring keep every balance, position, trade and breaker; a
+  restart blocks entries and cannot clear a breaker; corrupt files stop the runner;
+  requests, price outages, broken strategies, a second runner and a clean stop are covered.
 
 ## Settings you may want to change
 

@@ -107,3 +107,16 @@ def test_every_simulated_entry_goes_through_the_risk_engine():
             for a in fn.args.args:
                 ann = ast.unparse(a.annotation) if a.annotation else ""
                 assert "Decision" not in ann, f"{name} accepts a Decision"
+
+
+def test_nothing_outside_the_simulator_opens_a_position():
+    """The runner, store and CLI can only reach entries through SimExchange.submit()."""
+    for f in SRC.rglob("*.py"):
+        if f == SRC / "paper" / "sim.py":
+            continue
+        tree = ast.parse(f.read_text())
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Attribute):
+                assert n.attr != "_open_position", f"{f} calls _open_position"
+            if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "SimPosition":
+                raise AssertionError(f"{f} creates a SimPosition; only SimExchange._open_position may")
