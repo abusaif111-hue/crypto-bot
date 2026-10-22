@@ -36,7 +36,9 @@ into the settings. Rule IDs in code and tests refer to that package.
 - Risk, portfolio and core code is pure: no network or file I/O (enforced by tests).
 - Fail closed: missing data, failed reconciliation or an error blocks new entries.
 - Binance access only through the adapter in `bot.exchange` (official
-  `binance-sdk-spot`). Check current Binance docs before relying on an endpoint;
+  `binance-sdk-spot`). Only `bot/exchange/binance.py` may import the SDK; its
+  `READ_ONLY_CALLS` allowlist must stay GET-only. Order code (module 5) is a
+  separate module, never added to the read-only adapter. Check current Binance docs before relying on an endpoint;
   REST listenKey user streams were retired in Feb 2026, use the WebSocket API
   `userDataStream.subscribe.signature`.
 - Every new rule or module ships with tests. Run `pytest` before finishing;
@@ -50,12 +52,13 @@ pip install -e ".[dev]"
 pytest
 bot check-config
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000
+bot exchange-check --env testnet
 ```
 
 ## Build order (from the design package)
 
 1. ~~Core, risk engine, breakers, accounting~~ (done, module 1)
-2. Binance adapter, **read-only** first: exchangeInfo, myFilters, commission, balances, klines, book ticker
+2. ~~Binance adapter, **read-only** first: exchangeInfo, myFilters, commission, balances, klines, book ticker~~ (done, module 2: `bot.exchange.binance`; not yet run against testnet)
 3. Market data service + simulated exchange for paper trading (same interface as the adapter)
 4. Backtester (fees, slippage, no look-ahead, walk-forward, locked 12-month holdout) + strategies H1–H3 vs baselines
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
