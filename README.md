@@ -34,6 +34,29 @@ bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 --loss-to
 `try-trade` runs a trade idea through the real risk engine using example market
 data, and prints whether it is accepted, the size, the worst planned loss and why.
 
+## Put it on a server (browser only, nothing installed on your laptop)
+
+1. Rent a small Ubuntu 24.04 server in a region where Binance service is permitted
+   (for example Frankfurt; not the US). Open its browser console; you are root.
+2. Download the code and run the setup script:
+   ```bash
+   apt-get update && apt-get -y install git
+   git clone https://github.com/abusaif111-hue/crypto-bot.git
+   bash crypto-bot/scripts/setup_server.sh
+   ```
+   `git clone` asks for your GitHub username and, as password, a fine-grained
+   token limited to this repository with Contents: Read-only. The script
+   installs everything, runs the tests and prints the server's IP address.
+3. Connect Binance **read-only** (only useful once module 2 is installed):
+   ```bash
+   su - bot
+   bash ~/crypto-bot/scripts/make_binance_key.sh
+   ```
+   It creates the key on the server, shows the public key to paste into Binance
+   (API Management > Create API > Self-generated), and stores the API key you
+   paste back in `.env`. Give the key **Enable Reading** only and restrict it to
+   the server's IP.
+
 ## How a trade is sized
 
 1. Entry is assumed to fill slightly worse than planned (0.05%), and the stop
