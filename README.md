@@ -18,6 +18,7 @@ and paper-trading simulator) are done:
 | Market data service | `src/bot/market/data.py` | Builds the price, spread, volume, depth, data-age and clock-skew snapshot the risk engine needs; any failure blocks new entries |
 | Paper-trading simulator | `src/bot/paper/sim.py`, `src/bot/paper/fills.py` | Simulated exchange with 10,000 USDT of simulated money; every entry goes through the risk engine; fills pay the 0.1% taker fee and slippage; exits by simulated stop-loss, take-profit and time stop |
 | Paper-trading runner | `src/bot/paper/runner.py`, `src/bot/paper/store.py` | `bot paper run` checks live prices every 5 seconds, fills simulated exits, logs every decision and trade, and saves the account after every check so restarts lose nothing |
+| Backtesting, step 1 of 3 | `src/bot/backtest/`, `src/bot/analysis/`, `src/bot/strategies/` | Downloads and checks price history, replays it through the paper-trading simulator and the risk engine, and reports the baselines (cash, buy-and-hold, 50/50, random entries). The last 12 months are locked away for the final test |
 
 **The bot cannot trade yet.** It reads from Binance but has no code that sends orders.
 The paper-trading simulator only moves simulated money inside the program.
@@ -34,7 +35,7 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-pytest                              # 172 tests, about 20 seconds
+pytest                              # 215 tests, about 25 seconds
 bot check-config
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 --loss-today 150
@@ -84,21 +85,57 @@ data, and prints whether it is accepted, the size, the worst planned loss and wh
    bash /home/bot/crypto-bot/scripts/install_paper_service.sh
    ```
    It needs no API key: paper trading reads Binance's public prices and moves only
-   simulated money. New entries start blocked; allow them as the `bot` user:
+   simulated money. It also installs a short `paper` command you can type as root.
+   New entries start blocked; allow them and check on it with:
    ```bash
-   su - bot
-   cd ~/crypto-bot && . .venv/bin/activate
-   bot paper resume --operator Sultan --reason "start paper trading"
-   bot paper status
+   paper resume --operator Sultan --reason "start paper trading"
+   paper status
+   paper trade --operator Sultan --reason "test idea" --entry 82000 --stop 80000 --target 87000 --hours 72
+   paper log
    ```
-   Live log (as root): `journalctl -u bot-paper -f`. Full record of every decision and
-   trade: `/home/bot/paper/journal.jsonl`.
+   `paper` always runs as the `bot` user. The full record of every decision and trade
+   is `/home/bot/paper/journal.jsonl`.
 
 ## Update the server after new code is pushed
 
 As the `bot` user: `bash ~/crypto-bot/scripts/update_bot.sh` (downloads, installs,
 runs the tests, then the read-only Binance check). If paper trading runs as a service,
-restart it as root afterwards (`systemctl restart bot-paper`) and resume entries again.
+restart it as root afterwards (`systemctl restart bot-paper`) and resume entries again
+(`paper resume ...`). To pick up a new version of the `paper` command itself, run
+`install_paper_service.sh` again; it keeps the paper account.
+
+## Backtesting (step 1 of 3: data and baselines)
+
+On the server, as the `bot` user (`su - bot`, then `cd ~/crypto-bot`):
+
+```bash
+bot backtest fetch                  # 4-hour BTC/ETH candles since 2019, public data, no API key
+bot backtest baselines              # cash, buy-and-hold BTC, 50/50 BTC/ETH, 200 random-entry runs
+```
+
+`fetch` stores the candles in `~/backtest-data` and refuses impossible prices; gaps
+(Binance maintenance) are listed. `baselines` writes `report.md` and `results.json` to
+`~/backtests/<date>-baselines/` and prints the report.
+
+- **Periods (fixed in `src/bot/backtest/periods.py`):** warm-up from 2019-01-01 (indicators
+  only), research 2020-01-01 to 2025-10-01, and a locked holdout 2025-10-01 to 2026-10-01.
+  No backtest code can read a holdout candle; only the holdout command (step 3, run by
+  Sultan) will.
+- **Same code as paper trading:** history is replayed through `SimExchange`, so every
+  entry goes through the risk engine with the same fee, slippage and exits. An idea
+  made at a candle's close fills at the next candle's open; strategies only see
+  finished candles.
+- **Costs:** 0.1% taker fee, 0.01% half-spread, the risk config's slippage (0.05% entry,
+  0.5% BTC / 1.0% ETH stops); a stop passed in a gap fills at the next open. Doubled
+  costs double all of these.
+- **Breakers in a backtest:** daily and weekly blocks resume once cleared (as if Sultan
+  resumed after review); the drawdown breaker stops trading for the rest of the run.
+- **Random entries** use the same exits and sizing as a strategy: stop 2 x ATR(14), target
+  3 x the stop distance, 96-hour time stop. A strategy that cannot beat them has no edge.
+- **Every report** records the git commit, a config fingerprint, the data range, the cost
+  model and the limits of simulation.
+
+Strategies H1-H3, walk-forward testing and robustness checks are step 2.
 
 ## How a trade is sized
 
@@ -186,7 +223,7 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
 
 ## Next modules
 
-4. Backtesting engine and the three candidate strategies
+4. Backtesting: strategies H1-H3, walk-forward and robustness (step 2), then the holdout (step 3)
 5. Order execution with protection checks and reconciliation
 6. Dashboard and Telegram alerts
 7. News and AI analysis (advisory only)

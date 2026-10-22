@@ -91,7 +91,7 @@ def save(sim: SimExchange, path: Path, now: float) -> None:
 # ------------------------------------------------------------ from JSON
 _DECIMAL_FIELDS = {
     "qty", "entry_price", "entry_fee", "stop_price", "take_profit_price", "planned_risk",
-    "price", "fee", "exit_price", "exit_fee", "pnl",
+    "price", "fee", "exit_price", "exit_fee", "pnl", "slippage",
 }
 
 

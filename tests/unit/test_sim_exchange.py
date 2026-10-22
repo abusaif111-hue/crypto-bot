@@ -242,3 +242,14 @@ def test_bad_settings_are_refused():
     for kw in ({"starting_quote": Dec("0")}, {"fee_rate": Dec("-0.001")}, {"entry_slippage_pct": Dec("-1")}):
         with pytest.raises(ValueError):
             SimExchange(AppConfig(), FakeMarket(), clock=Clock(), **kw)
+
+
+def test_slippage_multiplier_scales_entry_and_stop_slippage():
+    sim, market, _ = make(slippage_multiplier=Dec("2"))
+    market.set_bid("BTCUSDT", "79950", spread="10")          # ask 79,960; + 0.10% stays under the 80,040 cap
+    res = sim.submit(INTENT)
+    assert res.filled and res.fill.price == Dec("79960") * Dec("1.001")
+    assert res.fill.slippage == res.fill.qty * (res.fill.price - Dec("79960"))
+    market.set_bid("BTCUSDT", "78000")
+    (t,) = sim.poll()
+    assert t.exit_price == Dec("78000") * Dec("0.99")       # 2 x 0.5% for BTC

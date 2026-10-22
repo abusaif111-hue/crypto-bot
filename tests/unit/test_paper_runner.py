@@ -235,3 +235,16 @@ def cli_args(cmd, state_dir, **kw):
     import argparse
 
     return argparse.Namespace(config="config/default.yaml", cmd="paper", paper_cmd=cmd, state_dir=str(state_dir), **kw)
+
+
+def test_log_lines_show_short_numbers_journal_keeps_full_precision(tmp_path):
+    out = io.StringIO()
+    runner, _, _ = opened(tmp_path, out=out)
+    write_request(tmp_path, "resume", operator="sultan", reason="start paper trading")
+    trade_request(tmp_path)
+    runner.tick()
+    line = [x for x in out.getvalue().splitlines() if " entry_filled " in x][0]
+    assert "price=80040.00" in line and "qty=0.00966" in line and "at 80040.00" in line
+    assert "000000" not in line
+    filled = [e for e in journal(tmp_path) if e["event"] == "entry_filled"][0]
+    assert Dec(filled["fee"]) == Dec(filled["qty"]) * Dec("80040") * Dec("0.001")   # exact in the journal

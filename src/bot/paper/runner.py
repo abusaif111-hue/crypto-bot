@@ -25,7 +25,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Protocol, TextIO
 
-from bot.core.money import D
+from bot.core.money import D, fmt
 from bot.market.data import MarketDataService, MarketDataUnavailable
 from bot.paper import store
 from bot.paper.sim import ClosedTrade, EntryResult, SimExchange, as_utc
@@ -110,7 +110,7 @@ class PaperRunner:
         with open(self.state_dir / JOURNAL_FILE, "a") as f:
             f.write(json.dumps(entry) + "\n")
         if self.out is not None:
-            detail = " ".join(f"{k}={v}" for k, v in entry.items() if k not in ("at", "event"))
+            detail = " ".join(f"{k}={_readable(v)}" for k, v in fields.items())
             self.out.write(f"{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(now))}Z {event} {detail}\n")
             self.out.flush()
 
@@ -223,6 +223,15 @@ class PaperRunner:
 
     def _log_trade(self, t: ClosedTrade) -> None:
         self.log("trade_closed", **asdict(t))
+
+
+def _readable(v: Any) -> str:
+    """Log-line form: short numbers (the journal keeps full precision)."""
+    if isinstance(v, Decimal):
+        return fmt(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ",".join(_readable(x) for x in v) + "]"
+    return str(v)
 
 
 def _safe_equity(sim: SimExchange) -> Decimal | None:
