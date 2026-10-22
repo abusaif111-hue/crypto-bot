@@ -46,7 +46,7 @@ def test_real_binance_klines_pass_the_checks():
     (dict(high=Dec("1")), "high/low"),
     (dict(low=Dec("999999")), "high/low"),
     (dict(open=Dec("0")), "not positive"),
-    (dict(close_time=123), "length"),
+    (dict(close_time=123), "closes before it opens"),
 ])
 def test_bad_prints_are_found(change, expected):
     cs = walk(WARMUP_START_MS, 10)
@@ -59,8 +59,21 @@ def test_duplicates_and_gaps():
     cs = walk(WARMUP_START_MS, 10)
     assert not history.check_candles(cs[:5] + [cs[4]] + cs[5:], "4h").ok
     res = history.check_candles(cs[:4] + cs[7:], "4h")
-    assert res.ok and res.gaps == ((cs[3].open_time, cs[7].open_time),)
-    assert "1 gaps (3 missing candles)" in history.describe(res, "4h")
+    assert res.ok and res.gaps == ((cs[4].open_time, cs[7].open_time),)        # 3 candles = 12 hours missing
+    assert "1 gaps (12.0 hours without candles)" in history.describe(res, "4h")
+
+
+def test_irregular_maintenance_candles_are_kept_and_overlaps_refused():
+    """Binance publishes shorter/longer candles around maintenance halts (e.g. 2019-03-12)."""
+    cs = walk(WARMUP_START_MS, 10)
+    short = replace(cs[4], close_time=cs[4].open_time + 2 * 3_600_000 - 1)          # halted after 2 hours
+    res = history.check_candles(cs[:4] + [short] + cs[5:], "4h")
+    assert res.ok and res.irregular == ((short.open_time, short.close_time),)
+    assert res.gaps == ((short.close_time + 1, cs[5].open_time),)                   # 2 hours without candles
+    assert "1 irregular-length candles (kept)" in history.describe(res, "4h")
+    long = replace(cs[4], close_time=cs[5].open_time + 3_600_000)                  # runs into the next one
+    bad = history.check_candles(cs[:4] + [long] + cs[5:], "4h")
+    assert not bad.ok and "overlaps" in bad.problems[0]
 
 
 # ---------------------------------------------------------------- download and cache
