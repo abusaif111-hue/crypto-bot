@@ -39,6 +39,10 @@ into the settings. Rule IDs in code and tests refer to that package.
   `binance-sdk-spot`). Check current Binance docs before relying on an endpoint;
   REST listenKey user streams were retired in Feb 2026, use the WebSocket API
   `userDataStream.subscribe.signature`.
+- `binance-sdk-spot` 13.2.0's generic `send_request`/`send_signed_request` crash;
+  `bot.exchange.binance._SdkGetClient` calls the SDK's own `binance_common.utils.send_request`
+  helper instead (same session, config and Ed25519 signer). The read-only adapter may only
+  call endpoints in `READ_ENDPOINTS`; never add an order endpoint there.
 - Every new rule or module ships with tests. Run `pytest` before finishing;
   all tests must pass. Keep the property test at 3,000 examples or more.
 - One module per piece of work, small and reviewable.
@@ -55,7 +59,7 @@ bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000
 ## Build order (from the design package)
 
 1. ~~Core, risk engine, breakers, accounting~~ (done, module 1)
-2. Binance adapter, **read-only** first: exchangeInfo, myFilters, commission, balances, klines, book ticker
+2. ~~Binance adapter, **read-only**: exchangeInfo, myFilters, commission, balances, klines, book ticker, key permissions~~ (done, module 2: `bot.exchange.binance`, `bot check-binance`)
 3. Market data service + simulated exchange for paper trading (same interface as the adapter)
 4. Backtester (fees, slippage, no look-ahead, walk-forward, locked 12-month holdout) + strategies H1–H3 vs baselines
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation

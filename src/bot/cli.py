@@ -64,6 +64,82 @@ def _try_trade(args: argparse.Namespace) -> int:
     return 0 if d.accepted else 1
 
 
+def _binance_host_for(environment: str) -> str:
+    # Paper trading and simulation read real market data from the live exchange (read-only).
+    return {"sim": "live", "paper": "live", "live": "live", "testnet": "testnet"}.get(environment, environment)
+
+
+def _check_binance(args: argparse.Namespace, make_exchange=None, load_creds=None) -> int:
+    """Exit codes: 0 all checks passed, 2 setup problem, 3 unsafe key, 4 Binance error."""
+    from bot.exchange.binance import BinanceReadOnly, ExchangeError
+    from bot.exchange.credentials import CredentialsError, load_credentials
+
+    cfg = load_config(args.config)
+    host = _binance_host_for(cfg.environment.value)
+    make_exchange = make_exchange or BinanceReadOnly
+    load_creds = load_creds or load_credentials
+    ok = True
+
+    print(f"Binance read-only check ({host} exchange, bot environment: {cfg.environment.value})")
+    creds = None
+    if not args.public_only:
+        try:
+            creds = load_creds()
+        except CredentialsError as e:
+            print(f"  API key ........ NOT READY: {e}")
+            return 2
+    try:
+        ex = make_exchange(environment=host, credentials=creds)
+        skew = ex.clock_skew_ms()
+        skew_ok = abs(skew) <= cfg.risk.max_clock_skew_ms
+        ok &= skew_ok
+        print(f"  Clock .......... {'OK' if skew_ok else 'PROBLEM'}: {skew:+d} ms vs Binance (limit {cfg.risk.max_clock_skew_ms} ms)")
+
+        if creds is not None:
+            perms = ex.key_permissions()
+            if perms.safe:
+                print("  API key ........ SAFE: reading only, restricted to trusted IPs")
+            else:
+                print("  API key ........ STOP, this key has permissions a read-only bot must not have:")
+                for p in perms.problems:
+                    print(f"                   - {p}")
+                print("                   Fix it in Binance > API Management > Edit restrictions, then run this again.")
+                return 3
+            for w in perms.warnings:
+                print(f"  API key note ... {w}")
+
+        rules = ex.symbol_rules(cfg.universe)
+        books = ex.books(cfg.universe)
+        vols = ex.quote_volume_24h(cfg.universe)
+        for sym in cfg.universe:
+            r, b = rules[sym], books[sym]
+            ready = r.is_trading and r.oco_allowed
+            ok &= ready
+            print(f"  {sym:<14} {'OK' if ready else 'PROBLEM'}: {r.status}, bid {b.bid.normalize()} / ask {b.ask.normalize()}, "
+                  f"spread {b.spread_pct:.3f}%, 24h volume {vols[sym] / 1_000_000:,.0f}M USDT, "
+                  f"OCO {'yes' if r.oco_allowed else 'NO'}, OPO {'yes' if r.opo_allowed else 'no'}")
+            if creds is not None:
+                fee = ex.taker_fee(sym)
+                print(f"  {'':<14} taker fee {fee * 100:.3f}%, min order {r.min_notional.normalize()} USDT, "
+                      f"step {r.step_size.normalize()}" + (f", MAX_ASSET {r.max_asset_qty}" if r.max_asset_qty else ""))
+
+        if creds is not None:
+            bals = ex.balances()
+            equity, unvalued = ex.value_balances(bals)
+            print(f"  Balances ....... {len(bals)} assets, about {equity:,.2f} USDT valued at best bid")
+            if args.details:
+                for b in sorted(bals, key=lambda x: x.asset):
+                    print(f"                   {b.asset:<8} free {b.free.normalize()}  locked {b.locked.normalize()}")
+            if unvalued:
+                print(f"  Not valued ..... {', '.join(sorted(unvalued))} (no {cfg.quote_asset} market; not counted, the bot will not trade them)")
+    except ExchangeError as e:
+        print(f"  Binance ........ ERROR: {e}")
+        return 4
+
+    print("Result: " + ("ALL CHECKS PASSED. Read-only; no orders can be sent." if ok else "SOME CHECKS FAILED (see PROBLEM above)."))
+    return 0 if ok else 4
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="bot")
     p.add_argument("--config", default="config/default.yaml")
@@ -77,9 +153,13 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--target", required=True)
     t.add_argument("--loss-today", default="0", help="USDT already lost today")
     t.add_argument("--fee", default="0.001", help="taker fee as a fraction (0.001 = 0.1%%)")
+    c = sub.add_parser("check-binance", help="read-only connection check: key permissions, prices, rules, balances")
+    c.add_argument("--public-only", action="store_true", help="skip everything that needs the API key")
+    c.add_argument("--details", action="store_true", help="list each balance instead of the total only")
     args = p.parse_args(argv)
     try:
-        return {"check-config": _check_config, "try-trade": _try_trade}[args.cmd](args)
+        return {"check-config": _check_config, "try-trade": _try_trade,
+                "check-binance": _check_binance}[args.cmd](args)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2

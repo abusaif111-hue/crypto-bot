@@ -1,7 +1,7 @@
-# Crypto bot — module 1: risk foundation
+# Crypto bot
 
-This is the first working module of the Binance Spot trading bot described in the
-Stage 1 design package. It contains the parts every later module depends on:
+A risk-first Binance Spot trading bot, built module by module from the Stage 1 design
+package. Modules 1 (risk foundation) and 2 (read-only Binance connection) are done:
 
 | Part | Folder | What it does |
 | --- | --- | --- |
@@ -11,9 +11,12 @@ Stage 1 design package. It contains the parts every later module depends on:
 | Circuit breakers and modes | `src/bot/risk/modes.py` | Daily, weekly and drawdown breakers; RUNNING / ENTRIES_BLOCKED / PAUSED / EMERGENCY_FLATTEN |
 | Accounting | `src/bot/portfolio/accounting.py` | Equity at best bid, daily and weekly P&L without deposits and withdrawals, drawdown index |
 | Client order IDs | `src/bot/core/ids.py` | Deterministic IDs so a retried order can never be placed twice |
+| Binance connection, read-only | `src/bot/exchange/binance.py` | Reads prices, exchange rules, fees, balances and the API key's own permissions through Binance's official SDK; can only send GET requests to a fixed list of read endpoints |
+| Credentials | `src/bot/exchange/credentials.py` | Loads the API key and key file path from `.env`; refuses files other users can read; never prints the key |
 
-**This module cannot trade.** It has no Binance connection, no API keys and no
-order sending. Those come in later modules, behind this risk engine.
+**The bot cannot trade yet.** It reads from Binance but has no code that sends orders.
+Order sending comes in a later module, behind this risk engine, and only after testnet
+and paper trading.
 
 ## Run it
 
@@ -29,7 +32,12 @@ pytest                              # 68 tests, about 20 seconds
 bot check-config
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 --loss-today 150
+bot check-binance --public-only     # live prices and rules, no key needed
+bot check-binance                   # also checks your key is read-only, then reads fees and balances
 ```
+
+`check-binance` stops with exit code 3 if the API key can trade, withdraw or is not
+IP-restricted. Balances show as one total; add `--details` to list each asset.
 
 `try-trade` runs a trade idea through the real risk engine using example market
 data, and prints whether it is accepted, the size, the worst planned loss and why.
@@ -56,6 +64,11 @@ data, and prints whether it is accepted, the size, the worst planned loss and wh
    (API Management > Create API > Self-generated), and stores the API key you
    paste back in `.env`. Give the key **Enable Reading** only and restrict it to
    the server's IP.
+
+## Update the server after new code is pushed
+
+As the `bot` user: `bash ~/crypto-bot/scripts/update_bot.sh` (downloads, installs,
+runs the tests, then the read-only Binance check).
 
 ## How a trade is sized
 
@@ -96,7 +109,6 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
 
 ## Next modules
 
-2. Binance connection, read-only first (market data, balances, exchange rules)
 3. Market data service and paper-trading simulator
 4. Backtesting engine and the three candidate strategies
 5. Order execution with protection checks and reconciliation

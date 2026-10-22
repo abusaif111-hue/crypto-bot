@@ -1,11 +1,12 @@
 [project]
 name = "sultan-crypto-bot"
-version = "0.1.0"
-description = "Risk-first Binance Spot trading bot (module 1: core, risk engine, accounting)"
+version = "0.2.0"
+description = "Risk-first Binance Spot trading bot"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7,<3",
     "PyYAML>=6.0,<7",
+    "binance-sdk-spot>=13.2,<14",
 ]
 
 [project.optional-dependencies]
