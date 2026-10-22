@@ -176,13 +176,24 @@ class BinanceReadOnly:
     def server_time_ms(self) -> int:
         return int(self._get("/api/v3/time")["serverTime"])
 
-    def clock_skew_ms(self) -> int:
-        """Local clock minus Binance server time, corrected for half the round trip."""
-        t0 = self.clock()
-        server = self.server_time_ms()
-        t1 = self.clock()
-        local_mid = (t0 + t1) / 2 * 1000
-        return int(round(local_mid - server))
+    def clock_skew_ms(self, samples: int = 5) -> int:
+        """Local clock minus Binance server time.
+
+        The first request also sets up the TLS connection, which makes its timing
+        lopsided, so it is discarded. Of the remaining samples the one with the
+        shortest round trip is used, compared at the middle of that round trip.
+        """
+        self.server_time_ms()                       # warm-up: opens the connection
+        best: tuple[float, float] | None = None     # (round trip, skew)
+        for _ in range(max(1, samples)):
+            t0 = self.clock()
+            server = self.server_time_ms()
+            t1 = self.clock()
+            rtt = t1 - t0
+            skew = (t0 + t1) / 2 * 1000 - server
+            if best is None or rtt < best[0]:
+                best = (rtt, skew)
+        return int(round(best[1]))
 
     def symbol_rules(self, symbols: list[str]) -> dict[str, SymbolRules]:
         info = self._get("/api/v3/exchangeInfo", {"symbols": json.dumps(symbols, separators=(",", ":"))})

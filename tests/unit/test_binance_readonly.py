@@ -122,11 +122,15 @@ def test_books_volumes_depth_klines():
     assert [c.closed for c in k] == [int(r[6]) < 1792580000000 for r in fx("klines_btc_1d.json")]
 
 
-def test_clock_skew_uses_round_trip_midpoint():
-    ticks = iter([100.0, 100.2])
-    ex = BinanceReadOnly(environment="live", public_client=FakeClient({"/api/v3/time": {"serverTime": 100_050}}),
+def test_clock_skew_discards_warmup_and_uses_fastest_round_trip():
+    # Server clock = local clock exactly. Warm-up call has no timing; sample 1 is slow and
+    # lopsided (server stamped late in a 1.2 s round trip), sample 2 is fast and fair.
+    server_times = iter([0, 101_150, 105_010])
+    ticks = iter([100.0, 101.2, 105.0, 105.02])
+    ex = BinanceReadOnly(environment="live",
+                         public_client=FakeClient({"/api/v3/time": lambda p: {"serverTime": next(server_times)}}),
                          clock=lambda: next(ticks))
-    assert ex.clock_skew_ms() == 50
+    assert ex.clock_skew_ms(samples=2) == 0      # the slow sample alone would have said -550 ms
 
 
 # ---------------------------------------------------------------- safety of the adapter
