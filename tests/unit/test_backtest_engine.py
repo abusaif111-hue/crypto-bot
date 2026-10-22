@@ -209,3 +209,22 @@ def test_baselines_report(tmp_path):
     folder = report.write(tmp_path, "baselines", results, meta)
     assert (folder / "report.md").exists() and (folder / "results.json").exists()
     assert len(meta["git_commit"]) >= 7
+
+
+def test_irregular_candle_decisions_wait_for_its_real_close():
+    cs = two_coins(400)
+    k = next(i for i, c in enumerate(cs["BTCUSDT"]) if c.open_time >= RESEARCH_START_MS) + 5
+    for s in cs:                                                    # a maintenance halt on both coins
+        c = cs[s][k]
+        cs[s][k] = replace(c, close_time=c.open_time + 2 * 3_600_000 - 1)
+    s = Scripted()
+    res = run(s, cs, rules(), AppConfig())
+    short_close = cs["BTCUSDT"][k].close_time + 1
+    assert any(p.at_ms == short_close for p in res.equity)          # marked at the real close
+    assert all(latest < now * 1000 for now, latest in s.seen)
+    long_cs = two_coins(400)
+    for sym in long_cs:                                             # one coin's candle still open when the other's starts
+        long_cs[sym] = [c for c in long_cs[sym]]
+    long_cs["ETHUSDT"][k] = replace(long_cs["ETHUSDT"][k], open_time=long_cs["ETHUSDT"][k].open_time + 3_600_000)
+    with pytest.raises(ValueError, match="overlap"):
+        run(Scripted(), long_cs, rules(), AppConfig())

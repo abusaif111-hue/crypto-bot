@@ -6,10 +6,14 @@ cached as CSV in a data folder on the server, with the symbol's exchange rules
 beside them.
 
 Fail closed: a candle with impossible prices (high below open/close, low above
-them, zero or negative values), a duplicate or out-of-order time stops the
-download. Gaps (Binance maintenance windows) are reported but kept as gaps:
-the backtester sees the next candle's open, so a stop passed during a gap fills
-there, as it would have in reality.
+them, zero or negative values), a duplicate, out-of-order or overlapping time
+stops the download. Two things real Binance history has are kept and reported:
+- gaps (trading halted), where the backtester sees the next candle's open, so a
+  stop passed during a gap fills there, as it would have in reality;
+- irregular candles, shorter or longer than the interval, which Binance
+  publishes around its maintenance halts (2019-03-12, 2019-05-15 and others).
+  The backtester uses each candle's real close time, so nothing is decided
+  before a candle has finished.
 
 `load()` never returns a holdout candle (see `bot.backtest.periods`).
 """
@@ -39,8 +43,9 @@ class DataError(RuntimeError):
 @dataclass(frozen=True)
 class CheckResult:
     count: int
-    gaps: tuple[tuple[int, int], ...]     # (last open before the gap, first open after it)
+    gaps: tuple[tuple[int, int], ...]        # (first missing time, next candle's open)
     problems: tuple[str, ...]
+    irregular: tuple[tuple[int, int], ...] = ()   # (open, close) of candles not exactly one interval long
 
     @property
     def ok(self) -> bool:
@@ -49,7 +54,7 @@ class CheckResult:
 
 def check_candles(candles: list[Candle], interval: str) -> CheckResult:
     step = INTERVAL_MS[interval]
-    problems, gaps = [], []
+    problems, gaps, irregular = [], [], []
     prev = None
     for c in candles:
         when = c.open_time
@@ -59,15 +64,19 @@ def check_candles(candles: list[Candle], interval: str) -> CheckResult:
             problems.append(f"{when}: high/low do not contain open/close")
         if c.volume < 0 or c.quote_volume < 0:
             problems.append(f"{when}: negative volume")
-        if c.close_time != c.open_time + step - 1:
-            problems.append(f"{when}: candle length is not {interval}")
+        if c.close_time <= c.open_time:
+            problems.append(f"{when}: closes before it opens")
+        elif c.close_time != c.open_time + step - 1:
+            irregular.append((c.open_time, c.close_time))
         if prev is not None:
             if c.open_time <= prev.open_time:
                 problems.append(f"{when}: duplicate or out of order")
-            elif c.open_time != prev.open_time + step:
-                gaps.append((prev.open_time, c.open_time))
+            elif c.open_time <= prev.close_time:
+                problems.append(f"{when}: overlaps the previous candle")
+            elif c.open_time != prev.close_time + 1:
+                gaps.append((prev.close_time + 1, c.open_time))
         prev = c
-    return CheckResult(len(candles), tuple(gaps), tuple(problems))
+    return CheckResult(len(candles), tuple(gaps), tuple(problems), tuple(irregular))
 
 
 # ------------------------------------------------------------ files
@@ -158,5 +167,6 @@ def load_rules(data_dir: Path, symbol: str) -> SymbolRules:
 
 
 def describe(result: CheckResult, interval: str) -> str:
-    gap_bars = sum((b - a) // INTERVAL_MS[interval] - 1 for a, b in result.gaps)
-    return f"{result.count} candles, {len(result.gaps)} gaps ({gap_bars} missing candles)"
+    hours = sum(b - a for a, b in result.gaps) / 3_600_000
+    return (f"{result.count} candles, {len(result.gaps)} gaps ({hours:.1f} hours without candles), "
+            f"{len(result.irregular)} irregular-length candles (kept)")

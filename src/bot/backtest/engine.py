@@ -76,6 +76,7 @@ def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, S
     if not times:
         raise ValueError("no candles in the requested period")
     symbols = sorted(candles)
+    next_t = dict(zip(times, times[1:] + [None]))
 
     market.set_time(times[0])
     sim = SimExchange(cfg, market, clock=market.clock, starting_quote=starting_quote, fee_rate=cost.taker_fee,
@@ -103,7 +104,11 @@ def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, S
             c = by_time[s].get(t)
             if c is not None:
                 sim.on_candle(s, c)
-        close_ms = t + market.interval_ms                         # 3. at the close
+        # 3. at the close: the real close time, which is earlier or later than t + interval for the
+        #    irregular candles Binance publishes around maintenance halts
+        close_ms = max(by_time[s][t].close_time + 1 for s in symbols if t in by_time[s])
+        if next_t.get(t) is not None and next_t[t] < close_ms:
+            raise ValueError(f"candles overlap at {t}: one coin's candle is still open when another's starts")
         market.set_time(close_ms)
         _apply_resume_policy(sim, close_ms / 1000)
         if result.drawdown_halt_ms is None and RejectCode.DRAWDOWN.value in sim.modes.active_breaches:

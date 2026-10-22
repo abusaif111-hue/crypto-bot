@@ -285,11 +285,16 @@ def _backtest_fetch(args: argparse.Namespace, make_exchange=None) -> int:
         try:
             res = history.fetch(venue, data_dir, symbol, args.interval)
             print(f"{symbol} {args.interval}: {history.describe(res, args.interval)}")
+            def when(ms):
+                return time.strftime('%Y-%m-%d %H:%M', time.gmtime(ms / 1000))
             for a, b in res.gaps[:5]:
-                print(f"    gap after {time.strftime('%Y-%m-%d %H:%M', time.gmtime(a / 1000))} UTC, "
-                      f"next candle {time.strftime('%Y-%m-%d %H:%M', time.gmtime(b / 1000))} UTC")
+                print(f"    no candles from {when(a)} to {when(b)} UTC")
             if len(res.gaps) > 5:
                 print(f"    ... and {len(res.gaps) - 5} more gaps")
+            for a, b in res.irregular[:5]:
+                print(f"    irregular candle {when(a)} to {when(b + 1)} UTC ({(b + 1 - a) / 3_600_000:.2f} hours)")
+            if len(res.irregular) > 5:
+                print(f"    ... and {len(res.irregular) - 5} more irregular candles")
         except Exception as e:
             ok = False
             print(f"{symbol} {args.interval}: FAILED: {e}", file=sys.stderr)

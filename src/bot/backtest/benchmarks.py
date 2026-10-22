@@ -25,9 +25,8 @@ def _grid(candles: dict[str, list[Candle]], start_ms: int, end_ms: int | None) -
 
 
 def cash(candles: dict[str, list[Candle]], start_ms: int, end_ms: int | None, start: Decimal) -> list[EquityPoint]:
-    any_coin = next(iter(candles.values()))
-    step = any_coin[0].close_time - any_coin[0].open_time + 1
-    return [EquityPoint(t + step, start, False) for t in _grid(candles, start_ms, end_ms)]
+    first = {c.open_time: c for c in next(iter(candles.values()))}
+    return [EquityPoint(first[t].close_time + 1, start, False) for t in _grid(candles, start_ms, end_ms)]
 
 
 def _costs(cost: CostModel, cfg: AppConfig) -> tuple[Decimal, Decimal, Decimal]:
