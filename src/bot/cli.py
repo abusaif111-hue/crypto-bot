@@ -4,7 +4,7 @@
     bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 [--symbol BTCUSDT]
     bot check-binance [--public-only] [--details]
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
-    bot backtest fetch | baselines                        (history and baseline backtests)
+    bot backtest fetch | baselines | run                  (history, baselines, strategies H1-H3)
 
 `try-trade` runs a proposed trade through the real risk engine with example
 market data and prints the decision in plain language. It sends nothing to Binance.
@@ -329,6 +329,53 @@ def _backtest_baselines(args: argparse.Namespace, out=None) -> int:
     return 0
 
 
+STRATEGIES = ("H1", "H2", "H3")
+
+
+def _make_strategy(name: str, symbols: list[str]):
+    from bot.strategies.h1_trend import TrendBreakout
+    from bot.strategies.h2_momentum import TimeSeriesMomentum
+    from bot.strategies.h3_mean_reversion import RangeMeanReversion
+
+    return {"H1": TrendBreakout, "H2": TimeSeriesMomentum, "H3": RangeMeanReversion}[name](symbols)
+
+
+def _backtest_run(args: argparse.Namespace, out=None) -> int:
+    """Walk-forward and robustness tests of H1-H3 on the research period. The holdout stays locked."""
+    from bot.backtest import history, report, selection
+
+    cfg = load_config(args.config)
+    data_dir = Path(os.path.expanduser(args.data_dir))
+    out = out or sys.stdout
+    try:
+        candles = {s: history.load(data_dir, s, args.interval) for s in cfg.universe}
+        rules = {s: history.load_rules(data_dir, s) for s in cfg.universe}
+    except history.DataError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+
+    def say(msg):
+        out.write(f"  {time.strftime('%H:%M:%S', time.gmtime())} {msg}\n")
+        out.flush()
+
+    cost = report.CostModel()
+    meta = report.provenance(cfg, candles, cost)
+    verdicts = []
+    for name in args.strategy:
+        say(f"{name}: starting (27 setting combinations x 8 windows, then robustness checks)")
+        ev = selection.evaluate(_make_strategy(name, list(cfg.universe)), candles, rules, cfg, cost,
+                                random_runs=args.random_runs, progress=say)
+        text = selection.render(ev, meta, cfg)
+        folder = report.write_files(Path(os.path.expanduser(args.reports_dir)), f"strategy-{name}", text,
+                                    {"meta": meta, **selection.summary(ev)})
+        out.write("\n" + text + f"\nReport saved in {folder}\n\n")
+        verdicts.append((name, ev.passes_walk_forward, folder))
+    out.write("Summary (walk-forward part of the selection rule; the holdout is step 3):\n")
+    for name, ok, folder in verdicts:
+        out.write(f"  {name}: {'passes, holdout pending' if ok else 'does not qualify'}  ({folder})\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="bot")
     p.add_argument("--config", default="config/default.yaml")
@@ -372,13 +419,18 @@ def main(argv: list[str] | None = None) -> int:
     bb = bsub.add_parser("baselines", help="cash, buy-and-hold, 50/50 and random entries on the research period")
     bb.add_argument("--seeds", type=int, default=200, help="number of random-entry runs")
     bb.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
+    br = bsub.add_parser("run", help="walk-forward and robustness tests of strategies H1-H3 (research period)")
+    br.add_argument("--strategy", nargs="+", choices=STRATEGIES, default=list(STRATEGIES))
+    br.add_argument("--random-runs", type=int, default=50, help="random-entry runs with the same exits")
+    br.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     for q in bsub.choices.values():
         q.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
         q.add_argument("--interval", default="4h", choices=["4h"])
     args = p.parse_args(argv)
     try:
         if args.cmd == "backtest":
-            return {"fetch": _backtest_fetch, "baselines": _backtest_baselines}[args.backtest_cmd](args)
+            return {"fetch": _backtest_fetch, "baselines": _backtest_baselines,
+                    "run": _backtest_run}[args.backtest_cmd](args)
         if args.cmd == "paper":
             return {"run": _paper_run, "status": _paper_status, "resume": _paper_request("resume"),
                     "block": _paper_request("block"), "trade": _paper_request("trade")}[args.paper_cmd](args)

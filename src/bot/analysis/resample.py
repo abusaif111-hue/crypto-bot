@@ -1,0 +1,37 @@
+"""Daily candles from finished 4-hour candles (module 4). Pure, no I/O.
+
+Only complete UTC days are returned: a day counts once its last candle has
+closed at midnight, so a strategy never sees a day that is still running.
+Binance's maintenance days (shorter candles, gaps) still count when the day
+ran to midnight.
+"""
+from __future__ import annotations
+
+from typing import Sequence
+
+from bot.core.money import ZERO
+from bot.exchange.interface import Candle
+
+DAY_MS = 86_400_000
+
+
+def daily(candles: Sequence[Candle]) -> list[Candle]:
+    out: list[Candle] = []
+    day_start = None
+    group: list[Candle] = []
+
+    def flush() -> None:
+        if group and group[-1].close_time + 1 == day_start + DAY_MS:
+            out.append(Candle(open_time=day_start, open=group[0].open, high=max(c.high for c in group),
+                              low=min(c.low for c in group), close=group[-1].close,
+                              volume=sum((c.volume for c in group), ZERO), close_time=day_start + DAY_MS - 1,
+                              quote_volume=sum((c.quote_volume for c in group), ZERO), closed=True))
+
+    for c in candles:
+        d = c.open_time - c.open_time % DAY_MS
+        if d != day_start:
+            flush()
+            day_start, group = d, []
+        group.append(c)
+    flush()
+    return out

@@ -40,6 +40,9 @@ class Scripted:
         self.seen.append((now, latest))
         return self.plan.get(int(now * 1000), [])
 
+    def manage(self, data, now, open_trades):
+        return []
+
 
 def intent_at(c, stop_frac="0.97"):
     entry = entry_limit(c.close)

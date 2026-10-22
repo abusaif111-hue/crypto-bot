@@ -75,7 +75,10 @@ bot paper status
 2. ~~Binance adapter, **read-only**: exchangeInfo, myFilters, commission, balances, klines, book ticker, key permissions~~ (done, module 2: `bot.exchange.binance`, `bot check-binance`)
 3. ~~Market data service + simulated exchange for paper trading (same interface as the adapter)~~ (done, module 3: `bot.market.data`, `bot.paper.sim`)
 4. Backtester (fees, slippage, no look-ahead, walk-forward, locked 12-month holdout) + strategies H1–H3 vs baselines
-   (step 1 done: `bot.backtest` data, replay, engine, metrics, baselines; step 2: strategies + walk-forward; step 3: holdout)
+   (steps 1-2 done: data, replay, engine, metrics, baselines; strategies H1-H3, walk-forward, selection rule;
+   step 3: holdout, run by Sultan). Backtests have two modes: as deployed (6% breaker halts) and edge
+   measurement (breach recorded, peak reset; backtests only). Selection: every walk-forward test window
+   must stay below the 6% breaker as deployed (Sultan's decision).
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
 6. Loss-review loop, dashboard (FastAPI, not public), Telegram alerts
 7. News + LLM, advisory/veto only

@@ -14,6 +14,7 @@ from bot.core.money import D, pct
 STOP_LOSS = "STOP_LOSS"
 TAKE_PROFIT = "TAKE_PROFIT"
 TIME_STOP = "TIME_STOP"
+STRATEGY_EXIT = "STRATEGY_EXIT"     # the strategy's own exit signal: sell at market
 
 
 def taker_fee(notional: Decimal, rate: Decimal) -> Decimal:

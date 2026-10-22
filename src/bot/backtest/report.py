@@ -22,7 +22,7 @@ from bot.backtest.metrics import Metrics, compute, percentile
 from bot.backtest.periods import HOLDOUT_START_MS, RESEARCH_START_MS
 from bot.backtest.replay import CostModel
 from bot.core.config import AppConfig
-from bot.core.money import D, fmt
+from bot.core.money import D
 from bot.exchange.filters import SymbolRules
 from bot.exchange.interface import Candle
 from bot.paper.sim import STARTING_QUOTE
@@ -116,14 +116,16 @@ def render(results: dict[str, Any], meta: dict[str, Any]) -> str:
     if rs:
         lines += ["", f"## Random entries, same exits and sizing ({len(rs)} runs, seeds 0-{len(rs) - 1})", "",
                   "| Measure | 5th percentile | Median | 95th percentile |", "| --- | --- | --- | --- |"]
-        for label, get, as_pc in (("Net return", lambda m: m.net_return, True),
-                                  ("Max drawdown", lambda m: m.max_drawdown, True),
-                                  ("Trades", lambda m: D(m.trades), False),
-                                  ("Expectancy per trade (USDT)", lambda m: m.expectancy or D(0), False),
-                                  ("Fees paid (USDT)", lambda m: m.fees, False)):
+        shows = {"signed %": _pc, "%": lambda c: f"{c * 100:.1f}%", "count": lambda c: f"{c:.0f}",
+                 "usdt": lambda c: f"{c:+.2f}", "usdt plain": lambda c: f"{c:.2f}"}
+        for label, get, kind in (("Net return", lambda m: m.net_return, "signed %"),
+                                 ("Max drawdown", lambda m: m.max_drawdown, "%"),
+                                 ("Trades", lambda m: D(m.trades), "count"),
+                                 ("Expectancy per trade (USDT)", lambda m: m.expectancy or D(0), "usdt"),
+                                 ("Fees paid (USDT)", lambda m: m.fees, "usdt plain")):
             vals = [get(m) for m in rs]
             cells = [percentile(vals, D(q)) for q in ("0.05", "0.5", "0.95")]
-            lines.append(f"| {label} | " + " | ".join(_pc(c) if as_pc else fmt(c) for c in cells) + " |")
+            lines.append(f"| {label} | " + " | ".join(shows[kind](c) for c in cells) + " |")
         lines.append(f"\nRuns stopped by the drawdown breaker: {results['random_drawdown_halts']} of {len(rs)}.")
         lines.append("A strategy that cannot beat these random entries, with the same exits and risk rules, "
                      "has no edge in its entries.")
@@ -135,6 +137,14 @@ def render(results: dict[str, Any], meta: dict[str, Any]) -> str:
     lines += ["", "## Limits of simulation", ""] + [f"- {x}" for x in meta["limits_of_simulation"]]
     lines += ["", f"Config fingerprint (SHA-256): `{meta['config_sha256']}`"]
     return "\n".join(lines) + "\n"
+
+
+def write_files(out_dir: Path, name: str, report_md: str, data: dict[str, Any]) -> Path:
+    folder = Path(out_dir) / f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{name}"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "report.md").write_text(report_md)
+    (folder / "results.json").write_text(json.dumps(_plain(data), indent=1))
+    return folder
 
 
 def write(out_dir: Path, name: str, results: dict[str, Any], meta: dict[str, Any]) -> Path:

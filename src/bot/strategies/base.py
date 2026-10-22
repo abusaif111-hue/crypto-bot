@@ -1,10 +1,14 @@
 """The strategy contract (module 4). Pure: no I/O, no orders.
 
-A strategy only proposes `TradeIntent`s. It sees finished candles through the
-market data service (`closed_candles`), the same call in backtests (replay
-venue) and paper trading (live venue). Every intent then goes through
-`SimExchange.submit()`, and so through the risk engine. Each strategy has at
-most 3 tunable settings (design package, to limit curve fitting).
+A strategy only proposes. It sees finished candles through the market data
+service (`closed_candles`), the same call in backtests (replay venue) and paper
+trading (live venue), and returns:
+- `propose`: new `TradeIntent`s, which then go through `SimExchange.submit()`
+  and so through the risk engine;
+- `manage`: for positions already open, a tighter stop (`RaiseStop`; the
+  simulator refuses to lower one) or an exit at market (`Exit`). Exits only
+  reduce risk.
+Each strategy has at most 3 tunable settings (design package, to limit curve fitting).
 
 Fixed, not tuned (approved by Sultan):
 - the entry limit is the last close + 0.10%, so a small move up before the next
@@ -32,15 +36,54 @@ class CandleSource(Protocol):
                        end_ms: int | None = None, limit: int = 500) -> list[Candle]: ...
 
 
+@dataclass(frozen=True)
+class OpenTrade:
+    """What a strategy may know about one of its open positions."""
+    symbol: str
+    entry_price: Decimal
+    stop_price: Decimal
+    opened_at: float
+
+
+@dataclass(frozen=True)
+class RaiseStop:
+    symbol: str
+    stop: Decimal
+
+
+@dataclass(frozen=True)
+class Exit:
+    symbol: str
+    reason: str
+
+
+Action = RaiseStop | Exit
+
+
 class Strategy(Protocol):
     name: str
     interval: str
+    symbols: list[str]
 
     def params(self) -> dict[str, object]:
         """The tunable settings, at most three."""
         ...
 
+    def with_params(self, **params: object) -> "Strategy":
+        """A copy with different tunable settings (walk-forward and robustness checks)."""
+        ...
+
+    def history_needed(self) -> int:
+        """How many finished candles one decision needs."""
+        ...
+
+    def exit_plan(self, candles: list[Candle], entry: Decimal) -> tuple[Decimal, int] | None:
+        """(stop, holding horizon in hours) for an entry at `entry`; random entries reuse it."""
+        ...
+
     def propose(self, data: CandleSource, now: float) -> list[TradeIntent]: ...
+
+    def manage(self, data: CandleSource, now: float, open_trades: list[OpenTrade]) -> list[Action]: ...
 
 
 @dataclass(frozen=True)
@@ -70,3 +113,10 @@ def make_intent(symbol: str, entry: Decimal, stop: Decimal | None, strategy: str
     return TradeIntent(symbol=symbol, side="BUY", entry_price=entry, stop_price=stop,
                        take_profit_price=entry + TAKE_PROFIT_R * (entry - stop), strategy=strategy,
                        horizon_hours=horizon_hours, invalidation=invalidation)
+
+
+def scaled(value, factor: Decimal):
+    """A tunable setting moved by `factor` (0.8 / 1.2), keeping its type; whole numbers stay whole."""
+    if isinstance(value, int):
+        return max(1, int((Decimal(value) * factor).to_integral_value()))
+    return Decimal(value) * factor

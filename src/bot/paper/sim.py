@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Callable
@@ -299,6 +299,32 @@ class SimExchange:
         closed = [t for s, b in books.items() if (t := self._on_bid(s, b.bid, now)) is not None]
         self.account_state(now)
         return closed
+
+    def raise_stop(self, symbol: str, new_stop: Decimal, now: float | None = None) -> bool:
+        """Tighten a position's stop (trailing). Never lowers it, and never sets it at or above the
+        current bid (that would sell at once) or the take-profit. Returns whether it changed."""
+        pos = self.positions.get(symbol)
+        new_stop = D(new_stop)
+        if pos is None or new_stop <= pos.stop_price:
+            return False
+        bid = self._bids.get(symbol)
+        if bid is None or new_stop >= bid or new_stop >= pos.take_profit_price:
+            return False
+        self.positions[symbol] = replace(pos, stop_price=new_stop)
+        return True
+
+    def close_position(self, symbol: str, now: float | None = None) -> ClosedTrade | None:
+        """The strategy's own exit: sell the whole position at market (bid minus exit slippage).
+        Selling only reduces risk, so this needs no risk-engine approval."""
+        now = self.clock() if now is None else now
+        if symbol not in self.positions:
+            return None
+        bid = self.data.books([symbol])[symbol].bid       # MarketDataUnavailable propagates: no price, no sale
+        trade = self._on_bid(symbol, bid, now)            # a stop or target already hit takes precedence
+        if trade is None and symbol in self.positions:
+            trade = self._close(self.positions[symbol], fills.STRATEGY_EXIT, bid, now)
+        self._mark_quietly(now)
+        return trade
 
     def on_book(self, symbol: str, book: Book, now: float | None = None) -> ClosedTrade | None:
         now = self.clock() if now is None else now
