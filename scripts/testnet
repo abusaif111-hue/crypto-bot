@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Short form of "bot testnet ..." for the server console. Works as root or as the bot user;
+# always runs as the bot user, never as root. Installed to /usr/local/bin/testnet by
+# scripts/install_testnet_service.sh.
+#
+#   testnet status
+#   testnet start  --operator Sultan --capital 1000
+#   testnet resume --operator Sultan --reason "start the testnet runner"
+#   testnet block  --operator Sultan --reason "..."
+#   testnet log [lines]        # the service log (default 30 lines)
+set -euo pipefail
+BOT_USER=bot
+
+if [[ "${1:-}" == "log" ]]; then
+  exec journalctl -u bot-testnet -n "${2:-30}" --no-pager
+fi
+if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  sed -n '6,10p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+run='cd "$HOME/crypto-bot" && exec .venv/bin/bot testnet "$@"'
+if [[ "$(id -un)" == "$BOT_USER" ]]; then
+  exec bash -c "$run" testnet "$@"
+fi
+exec sudo -u "$BOT_USER" -H bash -c "$run" testnet "$@"

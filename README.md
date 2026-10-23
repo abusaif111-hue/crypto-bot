@@ -364,7 +364,42 @@ If Binance resets the testnet account, the balances no longer match: check that 
 then record a new baseline. Fees paid in BNB move the BNB balance, which also shows as a mismatch.
 Verify on testnet: how soon an order that timed out can be looked up (the 5-minute wait).
 
-Next: 5d the testnet runner (H2b placing real testnet orders), 5e alerts.
+**The testnet runner (5d, `bot.execution.runner`, service `bot-testnet`).** H2b places real orders on
+the testnet by itself, with the forward test's frozen settings and coins. It decides on live prices
+(the same ones the forward test sees); its orders, the risk engine's market checks and its valuations
+use the testnet's own prices. Every 60 seconds it:
+
+1. reconciles the ledger with the testnet account. Coins found unprotected are sold at market at once.
+   A mismatch or unprotected coins block new entries until an operator resumes; an exchange error or
+   an order still unsettled pauses entries for that round only;
+2. values the bot's account and carries out resume and block requests;
+3. sells trades whose time stop (30 days for H2b) has passed;
+4. once per finished 4-hour candle: H2b's exits for its own trades, then its new ideas. Each idea is
+   written to the ledger first, then goes through the risk engine and is sent as one protected order
+   list (fill-or-kill buy, stop-loss, take-profit), as in the round trips.
+
+The bot trades a **capped capital** inside the testnet account (default 1,000 USDT of testnet
+money): its equity is that capital plus every change in USDT and the watched coins since the start,
+so fees and whatever closed a trade are counted. Daily, weekly and drawdown limits work as everywhere
+else; a restart keeps the breakers and blocks entries until an operator resumes.
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot testnet start --operator Sultan --capital 1000   # once
+# as root:
+bash /home/bot/crypto-bot/scripts/install_testnet_service.sh      # installs "testnet", starts bot-testnet
+testnet resume --operator Sultan --reason "start the testnet runner"
+testnet status
+testnet log
+```
+
+Once the runner's account exists, `testnet-roundtrip` refuses (its trades would mix with the
+runner's), and `bot reconcile` only reports while the runner is running. On the testnet the risk
+engine may reject coins whose testnet trading volume is too thin (it did for ETH): that is the
+rule working, not a fault. If Binance resets the testnet account, the account's value drops and the
+drawdown breaker trips: stop the service, move `account.json` aside, record a new baseline and start
+again. Verify on testnet: the first H2b trade end to end, and a time stop or strategy exit.
+
+Next: 5e alerts.
 
 ## How a trade is sized
 
@@ -485,6 +520,6 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
    strategies in the paper runner and the forward test (start, run, status, end-of-test report) are
    done; H2b passed the walk-forward check (23 Oct 2026); the forward test is Sultan's to start
 5. Order execution on the testnet: 5a trading adapter, 5b protected entries (gate met: 5 clean
-   round trips) and 5c reconciliation done; next the testnet runner and alerts
+   round trips), 5c reconciliation and 5d the testnet runner done; next alerts
 6. Dashboard and Telegram alerts
 7. News and AI analysis (advisory only)

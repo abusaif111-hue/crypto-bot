@@ -23,7 +23,7 @@ appears in GET /api/v3/order (SETTLE_S).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Protocol
 
@@ -52,6 +52,7 @@ class Update:
     received_qty: Decimal | None = None
     left_qty: Decimal | None = None
     note: str = ""
+    prices: dict[str, Decimal] | None = None   # entry, stop and take-profit of a trade found open
 
 
 @dataclass
@@ -62,6 +63,7 @@ class Reconciliation:
     errors: list[str] = field(default_factory=list)         # Binance could not be read: try again
     updates: list[Update] = field(default_factory=list)
     checked: list[str] = field(default_factory=list)        # what matched, for the report
+    unprotected_ids: list[str] = field(default_factory=list)    # intent IDs of the trades in `unprotected`
 
     @property
     def clean(self) -> bool:
@@ -93,7 +95,8 @@ def apply(ledger: Ledger, rec: Reconciliation, now: float) -> None:
     if rec.errors:
         return
     for u in rec.updates:
-        ledger.mark(u.intent_id, u.status, now, received_qty=u.received_qty, left_qty=u.left_qty, note=u.note)
+        ledger.mark(u.intent_id, u.status, now, received_qty=u.received_qty, left_qty=u.left_qty, note=u.note,
+                    prices=u.prices)
     if rec.updates:
         ledger.save()
 
@@ -173,7 +176,8 @@ def _resolve_pending(t: TrackedTrade, trader: ReadOnlyTrader, now: float, rec: R
     fee = sum((f.commission for f in trader.my_trades(t.symbol, e.order_id) if f.commission_asset == t.base_asset),
               ZERO)
     received = e.executed_qty - fee
-    rec.updates.append(Update(t.intent_id, OPEN, received_qty=received, note="entry filled (found by reconciliation)"))
+    rec.updates.append(Update(t.intent_id, OPEN, received_qty=received, note="entry filled (found by reconciliation)",
+                              prices={"entry_price": e.quote_qty / e.executed_qty}))
     return received
 
 
@@ -203,8 +207,13 @@ def _check_open(t: TrackedTrade, received: Decimal, trader: ReadOnlyTrader, step
             problems.append(f"protection covers {plain(stop.orig_qty)} / {plain(tp.orig_qty)}")
         if problems:
             rec.unprotected.append(f"{name}: " + "; ".join(problems))
+            rec.unprotected_ids.append(t.intent_id)
         else:
             rec.checked.append(f"{name}: stop and take-profit open")
+        for i, u in enumerate(rec.updates):          # found open this run: record its protective prices
+            if u.intent_id == t.intent_id and u.status == OPEN:
+                rec.updates[i] = replace(u, prices={**(u.prices or {}), "stop_price": stop.stop_price or ZERO,
+                                                    "take_profit_price": tp.price})
         return True
     exit_ = trader.query(t.symbol, t.ids["exit"])
     if exit_ is not None and exit_.status == "FILLED":
@@ -214,6 +223,7 @@ def _check_open(t: TrackedTrade, received: Decimal, trader: ReadOnlyTrader, step
     states = " / ".join(o.status if o else "missing" for o in (stop, tp))
     rec.unprotected.append(f"{name}: no confirmed protection (stop / take-profit {states}) and no filled "
                            f"closing sale; sell the coins or restore the protection")
+    rec.unprotected_ids.append(t.intent_id)
     return True
 
 

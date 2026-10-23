@@ -30,9 +30,14 @@ else
   bot check-binance --public-only
 fi
 
-if systemctl is-enabled bot-paper >/dev/null 2>&1; then
+services=()
+for s in bot-paper bot-forward bot-testnet; do
+  if systemctl is-enabled "$s" >/dev/null 2>&1; then services+=("$s"); fi
+done
+if [[ ${#services[@]} -gt 0 ]]; then
   echo
-  echo "==> The paper-trading service is still running the old code. To load the new code, as root run:"
-  echo "    systemctl restart bot-paper"
-  echo "    (after a restart, new entries stay blocked until: bot paper resume --operator NAME --reason \"...\")"
+  echo "==> These services are still running the old code: ${services[*]}. To load the new code, as root run:"
+  echo "    systemctl restart ${services[*]}"
+  echo "    (after a restart, new entries stay blocked until each is resumed: paper / forward / testnet resume"
+  echo "     --operator NAME --reason \"...\")"
 fi
