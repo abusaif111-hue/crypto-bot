@@ -4,7 +4,7 @@
     bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 [--symbol BTCUSDT]
     bot check-binance [--public-only] [--details]
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
-    bot forward start | run | status | resume | block    (the H2b forward test, simulated money only)
+    bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
     bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b)
     bot backtest holdout                                  (the one-time holdout test; Sultan only)
 
@@ -368,6 +368,88 @@ def _forward_run(args: argparse.Namespace, make_exchange=None, out=None) -> int:
     return 0
 
 
+def _forward_report(args: argparse.Namespace, make_exchange=None, out=None) -> int:
+    """The end-of-test report: judged once, after the test has ended, with the runner stopped."""
+    import json
+
+    from bot import forward, forward_report
+    from bot.backtest import history, report, universe
+    from bot.exchange.binance import BinanceReadOnly
+    from bot.paper import store
+    from bot.paper.runner import CLOCK_FILE, STATE_FILE
+
+    out = out or sys.stdout
+    state_dir = Path(os.path.expanduser(args.state_dir))
+    data_dir = Path(os.path.expanduser(args.data_dir))
+    base = load_config(args.config)
+    try:
+        ft = forward.load(state_dir)
+        saved = forward_report.read_verdict(state_dir)
+        if saved is not None:
+            out.write(f"Already judged on {saved['judged_at']} by {saved['operator']}: {saved['verdict']}\n"
+                      f"Report: {saved['report']}\n")
+            return 0
+        if not args.operator.strip():
+            raise forward.ForwardError("give your name with --operator")
+        if not (state_dir / STATE_FILE).exists():
+            raise forward.ForwardError("the forward test has no account yet; nothing to judge")
+        if _runner_active(state_dir):
+            raise forward.ForwardError("stop the forward-test service first, so the account no longer changes "
+                                       "(as root: systemctl stop bot-forward)")
+        cfg = _forward_cfg(base, ft.symbols)
+        data = json.loads((state_dir / STATE_FILE).read_text())
+        sim = store.from_dict(data, cfg, market=None, clock=lambda: data["saved_at"])
+        clock = state_dir / CLOCK_FILE
+        last = json.loads(clock.read_text()).get(ft.strategy) if clock.exists() else None
+        now = time.time()
+        prog = forward.progress(ft, forward.read_journal(state_dir), last, len(sim.trades), now)
+        if prog.state == "running":
+            raise forward.ForwardError(f"the forward test has not ended: it can be judged from "
+                                       f"{forward.when(prog.earliest_end)} once {forward.MIN_TRADES} trades have "
+                                       f"closed ({len(sim.trades)} so far), or on {forward.when(prog.latest_end)}")
+        step = 4 * 3_600_000
+        end_ms = int(min(now, prog.latest_end) * 1000) // step * step
+        need, free = universe.memory_needed_mb(len(ft.symbols)), universe.available_memory_mb()
+        if free is not None and free < need + 30:
+            raise forward.ForwardError(f"the report needs about {need} MB of memory plus a margin and only {free} MB "
+                                       f"is free; stop the paper service for a while (systemctl stop bot-paper)")
+        venue = (make_exchange or BinanceReadOnly)(environment="live")
+        warm_from = int(ft.started_at * 1000) - (forward.make_strategy(ft).history_needed() + 60) * step
+        for s in ft.symbols:                      # extends the cache (it starts in 2019, before warm_from)
+            history.fetch(venue, data_dir, s, "4h", start_ms=warm_from, end_ms=end_ms)
+        candles = {s: [c for c in history.load_with_forward(data_dir, s, "4h") if warm_from <= c.open_time
+                       and c.close_time < end_ms] for s in ft.symbols}
+        short = [s for s, cs in candles.items() if not cs or cs[-1].close_time + 1 < end_ms or cs[0].open_time > warm_from]
+        if short:
+            raise history.DataError(f"price history does not cover the forward test for {', '.join(short)}; "
+                                    f"nothing is judged on incomplete prices")
+        rules = {s: history.load_rules(data_dir, s) for s in ft.symbols}
+
+        def say(msg):
+            out.write(f"  {time.strftime('%H:%M:%S', time.gmtime())} {msg}\n")
+            out.flush()
+
+        ev = forward_report.evaluate(ft, sim.trades, sim.fills, prog, candles, rules, cfg, end_ms,
+                                     random_runs=args.random_runs, progress=say)
+    except (forward.ForwardError, forward_report.ReportError, history.DataError) as e:
+        print(f"Error: {e}\nNothing was judged.", file=sys.stderr)
+        return 2
+    generated = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+    text = forward_report.render(ev, ft, args.operator, generated)
+    folder = report.write_files(Path(os.path.expanduser(args.reports_dir)), "forward-H2b", text,
+                                {"forward_test": ft.__dict__, **forward_report.summary(ev)})
+    try:
+        forward_report.save_verdict(state_dir, {"judged_at": generated, "operator": args.operator,
+                                                "verdict": forward_report.verdict(ev), "passes": ev.passes,
+                                                "report": str(folder)})
+    except forward_report.ReportError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    out.write("\n" + text + f"\nReport saved in {folder}; the verdict is recorded in "
+              f"{state_dir / forward_report.VERDICT_FILE} and is final.\n")
+    return 0
+
+
 def _forward_status(args: argparse.Namespace) -> int:
     import json
 
@@ -404,8 +486,8 @@ def _forward_status(args: argparse.Namespace) -> int:
     print(f"Can be judged from {forward.when(p.earliest_end)} once {forward.MIN_TRADES} trades have closed; "
           f"at the latest on {forward.when(p.latest_end)}")
     print({"running": "Status: running. Pass or fail is judged once, at the end, by the end-of-test report.",
-           "ready to judge": "Status: READY TO JUDGE: run the end-of-test report.",
-           "ended": "Status: ENDED (24-month limit): run the end-of-test report.",
+           "ready to judge": "Status: READY TO JUDGE: stop bot-forward, then run: forward report --operator NAME",
+           "ended": "Status: ENDED (24-month limit): stop bot-forward, then run: forward report --operator NAME",
            "failed": f"Status: FAILED: the 6% drawdown breaker tripped on "
                      f"{forward.when(p.failed_at or 0)}. H2b fails the forward test (plan section 3)."}[p.state])
     return 0
@@ -679,6 +761,11 @@ def main(argv: list[str] | None = None) -> int:
     fr.add_argument("--interval", type=float, default=5.0, help="seconds between price checks")
     fr.add_argument("--ticks", type=int, default=None, help=argparse.SUPPRESS)
     fsub.add_parser("status", help="days, trades, missed decisions and the end dates")
+    fp = fsub.add_parser("report", help="Sultan, once, after the test has ended: the 6 checks and the verdict")
+    fp.add_argument("--operator", required=True)
+    fp.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
+    fp.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
+    fp.add_argument("--random-runs", type=int, default=50, help="random-entry runs with the same exits")
     for name, help_ in (("resume", "allow new entries (refused while a breaker is active)"),
                         ("block", "block new entries; exits keep working")):
         q = fsub.add_parser(name, help=help_)
@@ -716,7 +803,7 @@ def main(argv: list[str] | None = None) -> int:
             return {"screen": _backtest_screen, "fetch": _backtest_fetch, "baselines": _backtest_baselines,
                     "run": _backtest_run, "holdout": _backtest_holdout}[args.backtest_cmd](args)
         if args.cmd == "forward":
-            return {"start": _forward_start, "run": _forward_run, "status": _forward_status,
+            return {"start": _forward_start, "run": _forward_run, "status": _forward_status, "report": _forward_report,
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
         if args.cmd == "paper":
             return {"run": _paper_run, "status": _paper_status, "resume": _paper_request("resume"),
