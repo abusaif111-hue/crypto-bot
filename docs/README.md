@@ -10,4 +10,9 @@ The design documents live as private Claude artifacts in Sultan's account:
   which is why its stop-slippage allowance is 1.0%.
 - **Crypto Bot Dashboard**: clickable mock-up of the dashboard website with example data.
 
+In this folder:
+
+- [`h2b-plan.md`](h2b-plan.md): the plan for H2b (blended momentum with a volatility pause)
+  and its forward test, after H2 failed the holdout. Draft until Sultan approves it.
+
 `CLAUDE.md` in the project root carries the rules that matter for writing code.
