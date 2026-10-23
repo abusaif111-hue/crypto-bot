@@ -96,12 +96,3 @@ def _annual_vol(equity: list[EquityPoint], start_equity: Decimal) -> Decimal | N
     return var.sqrt() * D(365).sqrt()
 
 
-def percentile(values: list[Decimal], q: Decimal) -> Decimal:
-    """Linear-interpolated percentile, q in [0, 1]."""
-    if not values:
-        raise ValueError("no values")
-    v = sorted(values)
-    pos = (len(v) - 1) * D(q)
-    lo = int(pos)
-    hi = min(lo + 1, len(v) - 1)
-    return v[lo] + (v[hi] - v[lo]) * (pos - lo)

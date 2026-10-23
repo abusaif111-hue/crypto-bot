@@ -7,7 +7,8 @@ import pytest
 import bot.paper.sim as sim_mod
 from bot.backtest import benchmarks, report
 from bot.backtest.engine import EquityPoint, _apply_resume_policy, run
-from bot.backtest.metrics import compute, percentile
+from bot.analysis.indicators import percentile
+from bot.backtest.metrics import compute
 from bot.backtest.periods import HOLDOUT_START_MS, RESEARCH_START_MS, HoldoutLocked
 from bot.backtest.replay import CostModel
 from bot.core.config import AppConfig

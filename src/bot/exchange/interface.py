@@ -13,6 +13,9 @@ from typing import Protocol, runtime_checkable
 from bot.exchange.filters import SymbolRules
 from bot.portfolio.accounting import Balance
 
+INTERVAL_MS = {"1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
+KLINES_PAGE = 1000                # Binance's maximum klines per request
+
 
 @dataclass(frozen=True)
 class Candle:

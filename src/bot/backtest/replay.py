@@ -111,14 +111,18 @@ class ReplayMarket:
 
     def klines(self, symbol: str, interval: str, start_ms: int | None = None, end_ms: int | None = None,
                limit: int = 500) -> list[Candle]:
-        """Finished candles only, newest last; `limit` counts back from now."""
+        """Finished candles only, newest last. As on Binance, `limit` counts forward from `start_ms`
+        when one is given, else back from now."""
         if interval != self.interval:
             raise ValueError(f"this replay holds {self.interval} candles, not {interval}")
         k = self._finished(symbol)
         cs = self.candles[symbol]
         lo = 0 if start_ms is None else bisect_left(self._open_times[symbol], start_ms)
         hi = k if end_ms is None else min(k, bisect_right(self._open_times[symbol], end_ms))
-        lo = max(lo, hi - limit)
+        if start_ms is None:
+            lo = max(lo, hi - limit)
+        else:
+            hi = min(hi, lo + limit)
         return cs[lo:hi]
 
     def balances(self) -> list[Balance]:

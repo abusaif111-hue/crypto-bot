@@ -145,6 +145,7 @@ def test_replay_shows_only_finished_candles_and_the_open_price():
     assert b.bid == cs[10].open * Dec("0.9999") and b.ask == cs[10].open * Dec("1.0001")
     assert m.quote_volume_24h(["BTCUSDT"])["BTCUSDT"] == 6 * Dec("50000000")
     assert m.klines("BTCUSDT", "4h", limit=3) == cs[7:10]
+    assert m.klines("BTCUSDT", "4h", start_ms=cs[2].open_time, limit=3) == cs[2:5]   # forward from start, as Binance
     with pytest.raises(ValueError):
         m.klines("BTCUSDT", "1d")
 

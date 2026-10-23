@@ -85,6 +85,12 @@ bot paper status
    H2 passed walk-forward on BTC/ETH/XRP/BNB. Step 3 is `bot backtest holdout` (`bot.backtest.holdout`):
    only Sultan runs it; never run, simulate or preview it, never create a `HoldoutTicket` elsewhere, and
    never change its pass rules after a result.
+   **H2 failed the holdout (23 Oct 2026) and is rejected; the holdout year is spent** and no
+   strategy may be judged on it again. Next is H2b, defined in `docs/h2b-plan.md` (approved by Sultan,
+   frozen): never edit that plan or tune H2b to pass; any change is a new strategy with a new forward
+   test. H2b never runs on the holdout. Its real test is a forward test on new prices (simulated money).
+   H2b is `bot.strategies.h2b_blend` (fixed values pinned by `tests/unit/test_h2b.py`); next: the stricter
+   holdout lock, strategy exits in the paper runner, then the forward-test mode (plan section 5).
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
 6. Loss-review loop, dashboard (FastAPI, not public), Telegram alerts
 7. News + LLM, advisory/veto only
