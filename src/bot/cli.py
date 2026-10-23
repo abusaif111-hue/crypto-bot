@@ -403,6 +403,12 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
         out.write(f"  {time.strftime('%H:%M:%S', time.gmtime())} {msg}\n")
         out.flush()
 
+    from bot.backtest.universe import available_memory_mb, memory_needed_mb
+    need, free = memory_needed_mb(len(symbols)), available_memory_mb()
+    if free is not None and free < need + 30:
+        print(f"Error: this run needs about {need} MB of memory plus a margin, and only {free} MB is free. "
+              f"Stop other programs or add swap, then try again.", file=sys.stderr)
+        return 2
     cost = report.CostModel()
     meta = report.provenance(cfg, candles, cost)
     if desc:

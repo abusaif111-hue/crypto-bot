@@ -111,10 +111,32 @@ def test_screen_never_reads_the_holdout():
     assert all(c.close_time < HOLDOUT_START_MS for c in win)
 
 
-def test_pick_keeps_the_8_most_traded_passing_coins():
+def test_pick_keeps_the_4_most_traded_passing_coins():
     rs = [CoinResult(f"C{i}USDT", median_volume=Dec(i)) for i in range(12)]
     rs.append(CoinResult("BADUSDT", median_volume=Dec(1000), failures=["x"]))
-    assert [r.symbol for r in pick(rs)] == [f"C{i}USDT" for i in range(11, 3, -1)]
+    assert [r.symbol for r in pick(rs)] == ["C11USDT", "C10USDT", "C9USDT", "C8USDT"]
+    assert universe.MAX_EXTRA_COINS == 4
+
+
+def test_memory_estimate_and_reading(tmp_path):
+    assert universe.memory_needed_mb(2) == 75 and universe.memory_needed_mb(6) == 131
+    f = tmp_path / "meminfo"
+    f.write_text("MemTotal:  480000 kB\nMemFree: 10000 kB\nMemAvailable:  209920 kB\n")
+    assert universe.available_memory_mb(f) == 205
+    assert universe.available_memory_mb(tmp_path / "missing") is None
+
+
+def test_run_refuses_to_start_without_enough_memory(tmp_path, monkeypatch, capsys):
+    from tests.backtest_data import H4, rules as r4, walk
+    from bot.backtest import history
+    for s in ("BTCUSDT", "ETHUSDT"):
+        history.write_csv(tmp_path / f"{s}-4h.csv", walk(RESEARCH_START_MS - 10 * H4, 20, "100"))
+        (tmp_path / f"{s}-rules.json").write_text(json.dumps(history.rules_to_info(r4((s,))[s])))
+    monkeypatch.setattr(universe, "available_memory_mb", lambda: 60)
+    rargs = argparse.Namespace(config="config/default.yaml", data_dir=str(tmp_path), interval="4h",
+                               strategy=["H2"], random_runs=1, reports_dir=str(tmp_path), screened=False)
+    assert cli._backtest_run(rargs, out=io.StringIO()) == 2
+    assert "only 60 MB is free" in capsys.readouterr().err
 
 
 def test_helpers():
@@ -203,6 +225,7 @@ def test_screened_fetch_and_run(tmp_path, monkeypatch):
     assert (tmp_path / "LONUSDT-4h.csv").exists()
     monkeypatch.setattr(walkforward, "windows", lambda: SHORT)
     monkeypatch.setattr(walkforward, "GRID", (Dec(1),))
+    monkeypatch.setattr(universe, "available_memory_mb", lambda: None)     # independent of this machine
     rargs = argparse.Namespace(config="config/default.yaml", data_dir=str(tmp_path), interval="4h",
                                strategy=["H2"], random_runs=1, reports_dir=str(tmp_path / "rep"), screened=True)
     out = io.StringIO()

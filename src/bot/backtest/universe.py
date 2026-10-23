@@ -14,7 +14,9 @@ holdout (the holdout is never downloaded or read here). A candidate passes if:
   (the design package's stability screen), and
 - its daily trading volume was at least the risk config's minimum (20 million
   USDT, rule R-11) on at least 95% of days.
-Up to 8 passing coins with the highest median daily volume are picked (D-16).
+Up to 4 passing coins with the highest median daily volume are picked. D-16 allows
+up to 8; Sultan chose 4 so the backtest fits the 512 MB server without swap (each coin
+adds about 14 MB; decided before any coin's data was seen).
 
 Correlation groups (R-08 as written): a coin whose daily returns correlate with
 BTC's at or above `corr_threshold` (0.8) over the window joins BTC and ETH in
@@ -53,7 +55,9 @@ VOL_MULTIPLE = Decimal("2")
 MAX_SHARE_ABOVE = Decimal("0.25")
 MAX_DRAWDOWN = Decimal("0.70")
 MIN_LIQUID_SHARE = Decimal("0.95")
-MAX_EXTRA_COINS = 8
+MAX_EXTRA_COINS = 4          # D-16 allows 8; 4 fits the server's memory (Sultan's decision)
+BASE_MEMORY_MB = 75          # measured: a 2-coin backtest
+MEMORY_PER_COIN_MB = 14      # measured: each extra coin's candles and replay data
 VOL_DAYS = 30
 ALWAYS = ("BTCUSDT", "ETHUSDT")
 MAJORS = "majors"
@@ -228,6 +232,21 @@ def screen(venue: SymbolLister, data_dir: Path, cfg: AppConfig, progress=None) -
            "results": [_plain({**asdict(r), "passed": r.passed}) for r in results]}
     (folder / "universe.json").write_text(json.dumps(out, indent=1))
     return out
+
+
+def memory_needed_mb(coins: int) -> int:
+    return BASE_MEMORY_MB + MEMORY_PER_COIN_MB * max(0, coins - 2)
+
+
+def available_memory_mb(meminfo: Path = Path("/proc/meminfo")) -> int | None:
+    """MemAvailable from Linux; None where it cannot be read (then no check is made)."""
+    try:
+        for line in meminfo.read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except OSError:
+        return None
+    return None
 
 
 def load_universe(data_dir: Path) -> dict[str, Any]:
