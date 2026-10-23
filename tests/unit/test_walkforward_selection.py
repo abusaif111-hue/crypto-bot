@@ -223,6 +223,8 @@ def test_cli_run_writes_a_report(tmp_path, monkeypatch):
         (data_dir / f"{s}-rules.json").write_text(__import__("json").dumps(history.rules_to_info(rules((s,))[s])))
     monkeypatch.setattr(walkforward, "windows", lambda: SHORT)
     monkeypatch.setattr(walkforward, "GRID", (Dec(1),))
+    from bot.backtest import universe
+    monkeypatch.setattr(universe, "available_memory_mb", lambda: None)     # independent of this machine
     out = io.StringIO()
     args = argparse.Namespace(config="config/default.yaml", data_dir=str(data_dir), interval="4h", strategy=["H2"],
                               random_runs=2, reports_dir=str(tmp_path / "rep"))

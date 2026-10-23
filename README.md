@@ -180,7 +180,9 @@ nohup bot backtest run --strategy H2 --screened > ~/backtests/run-h2-wide.log 2>
   earlier ("no new listings", D-16); no stablecoins, fiat, gold, wrapped or leveraged tokens.
 - **Screen**, over 2022-10-01 to 2025-10-01 (before the holdout, never touching it):
   30-day volatility above 2x BTC's on at most 25% of days; worst fall at most 70%; at least
-  20 million USDT traded on 95% of days. Up to 8 passing coins with the most volume (D-16).
+  20 million USDT traded on 95% of days. Up to 4 passing coins with the most volume (D-16
+  allows 8; 4 fits the 512 MB server, about 14 MB per coin). `bot backtest run` refuses to
+  start if free memory is too low.
 - **Correlation groups (R-08 as written):** correlation with BTC 0.8 or more joins BTC/ETH in
   "majors"; below that a coin gets its own group. R-04 (3 positions) and R-05 (1.5% open
   risk) still cap the total.
