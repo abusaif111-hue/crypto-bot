@@ -110,7 +110,12 @@ bot paper status
    itself, sends one OPOCO list (BUY LIMIT FOK, SELL LIMIT_MAKER take-profit, SELL STOP_LOSS or STOP_LOSS_LIMIT
    stop), confirms both protective orders after the fill, and on any doubt sells at market and blocks entries.
    `bot testnet-roundtrip` runs one protected trade on the testnet; clean ones count toward the gate
-   (`~/testnet/roundtrips.jsonl`).
+   (`~/testnet/roundtrips.jsonl`). Gate met 23 Oct 2026: 5 clean BTC round trips.
+   5c done: `bot.execution.ledger` (a trade is written PENDING before its order is sent; OPEN, CLOSED,
+   NOT_OPENED; the baseline is coins that are not the bot's, set only by an operator with nothing open)
+   and `bot.execution.reconcile` (read-only: never places or cancels; anything that differs, an unknown
+   outcome or an exchange error blocks new entries). `bot reconcile`; `testnet-roundtrip` reconciles
+   before and after. Never loosen what reconciliation checks to make it pass.
    **Sultan's decision (23 Oct 2026):** after the testnet gate (5 clean round trips), go live with a small,
    capped amount without waiting for the paper review; the H2b forward test keeps running. Sultan sets the
    cap and flips the live switch himself (1 USDT, his first figure, is below Binance's 5 USDT minimum order).

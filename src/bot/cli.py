@@ -5,6 +5,7 @@
     bot check-binance [--public-only] [--details]
     bot check-trading [--symbol BTCUSDT]                  (testnet trading key and a test order; places nothing)
     bot testnet-roundtrip [--symbol BTCUSDT]              (one protected trade on the testnet, fake money)
+    bot reconcile [--set-baseline --operator NAME --reason "..."]   (testnet ledger vs account; places nothing)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
     bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b)
@@ -24,6 +25,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from bot.core.config import load_config
+from bot.core.money import D, fmt, plain
 from bot.exchange.filters import parse_symbol
 from bot.risk.engine import evaluate
 from bot.risk.models import AccountState, MarketSnapshot, Mode, TradeIntent
@@ -126,13 +128,13 @@ def _check_binance(args: argparse.Namespace, make_exchange=None, load_creds=None
             r, b = rules[sym], books[sym]
             ready = r.is_trading and r.oco_allowed
             ok &= ready
-            print(f"  {sym:<14} {'OK' if ready else 'PROBLEM'}: {r.status}, bid {b.bid.normalize()} / ask {b.ask.normalize()}, "
+            print(f"  {sym:<14} {'OK' if ready else 'PROBLEM'}: {r.status}, bid {plain(b.bid)} / ask {plain(b.ask)}, "
                   f"spread {b.spread_pct:.3f}%, 24h volume {vols[sym] / 1_000_000:,.0f}M USDT, "
                   f"OCO {'yes' if r.oco_allowed else 'NO'}, OPO {'yes' if r.opo_allowed else 'no'}")
             if creds is not None:
                 fee = ex.taker_fee(sym)
-                print(f"  {'':<14} taker fee {fee * 100:.3f}%, min order {r.min_notional.normalize()} USDT, "
-                      f"step {r.step_size.normalize()}" + (f", MAX_ASSET {r.max_asset_qty}" if r.max_asset_qty else ""))
+                print(f"  {'':<14} taker fee {fee * 100:.3f}%, min order {plain(r.min_notional)} USDT, "
+                      f"step {plain(r.step_size)}" + (f", MAX_ASSET {r.max_asset_qty}" if r.max_asset_qty else ""))
 
         if creds is not None:
             bals = ex.balances()
@@ -140,7 +142,7 @@ def _check_binance(args: argparse.Namespace, make_exchange=None, load_creds=None
             print(f"  Balances ....... {len(bals)} assets, about {equity:,.2f} USDT valued at best bid")
             if args.details:
                 for b in sorted(bals, key=lambda x: x.asset):
-                    print(f"                   {b.asset:<8} free {b.free.normalize()}  locked {b.locked.normalize()}")
+                    print(f"                   {b.asset:<8} free {plain(b.free)}  locked {plain(b.locked)}")
             if unvalued:
                 print(f"  Not valued ..... {', '.join(sorted(unvalued))} (no {cfg.quote_asset} market; not counted, the bot will not trade them)")
     except ExchangeError as e:
@@ -192,8 +194,8 @@ def _check_trading(args: argparse.Namespace, make_trader=None, make_reader=None,
         req = OrderRequest(args.symbol, "BUY", "LIMIT", qty, client_order_id(new_intent_id(), "entry"),
                            price=price, time_in_force="GTC")
         trader.test_order(req, rules)
-        print(f"  Test order ..... OK: Binance accepted a test LIMIT BUY {qty.normalize()} {args.symbol} at "
-              f"{price.normalize()} (validated only, not placed)")
+        print(f"  Test order ..... OK: Binance accepted a test LIMIT BUY {plain(qty)} {args.symbol} at "
+              f"{plain(price)} (validated only, not placed)")
         print(f"  Open orders .... {len(trader.open_orders(args.symbol))} on {args.symbol}")
     except OrderRejected as e:
         print(f"  Test order ..... REFUSED: {e}")
@@ -210,15 +212,18 @@ DEFAULT_TESTNET_DIR = "~/testnet"
 
 def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=None, load_creds=None,
                        sleep=time.sleep, out=None) -> int:
-    """One protected round trip on the Binance SPOT TESTNET (fake money): risk engine, OPOCO entry,
-    protection confirmed, short hold, close, nothing left open. Recorded toward the 5-clean-round-trips gate.
-    Exit codes: 0 clean, 1 not clean (see the reason), 2 setup problem, 3 act now (coins may be unprotected)."""
+    """One protected round trip on the Binance SPOT TESTNET (fake money): reconciliation, risk engine, OPOCO
+    entry, protection confirmed, short hold, close, nothing left open, reconciliation again. Recorded toward
+    the 5-clean-round-trips gate; the trade is written to the ledger before its order is sent.
+    Exit codes: 0 clean, 1 not clean (see the reason), 2 setup problem or not started, 3 act now
+    (coins may be unprotected, or an order's outcome is unknown)."""
     from bot.core.ids import new_intent_id
     from bot.core.money import D, pct
     from bot.exchange.binance import BinanceReadOnly, ExchangeError
     from bot.exchange.credentials import CredentialsError, load_credentials
     from bot.exchange.trading import BinanceTrader, OrderStatusUnknown
     from bot.execution import entry, roundtrip
+    from bot.execution.ledger import Ledger, LedgerError
     from bot.market.data import MarketDataService, MarketDataUnavailable
     from bot.risk.models import AccountState, Mode, TradeIntent
 
@@ -229,7 +234,8 @@ def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=N
     out.write("Binance TESTNET round trip (fake money; testnet.binance.vision)\n")
     try:
         creds = load_creds()
-    except CredentialsError as e:
+        book = Ledger.load(journal_dir, "testnet")
+    except (CredentialsError, LedgerError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
     trader = (make_trader or BinanceTrader)(environment="testnet", credentials=creds)
@@ -238,10 +244,6 @@ def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=N
     data = MarketDataService(reader, wide)
     try:
         info = trader.account()
-        if trader.open_orders(args.symbol):
-            print(f"Error: there are open orders on {args.symbol} in the testnet account; cancel them first",
-                  file=sys.stderr)
-            return 2
         usdt = next((b.free for b in info.balances if b.asset == "USDT"), D(0))
         equity = min(usdt, D(args.equity))
         rules = data.rules(args.symbol)
@@ -249,6 +251,14 @@ def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=N
     except (ExchangeError, MarketDataUnavailable) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
+    if rules.base_asset not in book.baseline:
+        print(f"Error: the ledger has no baseline for {rules.base_asset}. Record the coins the testnet account "
+              f"holds first:\n  bot reconcile --set-baseline --operator NAME --reason \"...\"", file=sys.stderr)
+        return 2
+    before = _reconcile(book, trader, reader, out, "Before")
+    if not before.clean:
+        out.write("Result: NOT started: reconciliation must be clean before a new entry (bot reconcile).\n")
+        return 3 if before.unprotected else 2
     # A test account of `equity` USDT with nothing open: the risk engine sizes the trade on that.
     state = AccountState(mode=Mode.RUNNING, equity=equity, free_quote=equity, day_start_equity=equity,
                          week_start_equity=equity, daily_pnl=D(0), weekly_pnl=D(0), drawdown_pct=D(0))
@@ -257,20 +267,29 @@ def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=N
     intent = TradeIntent(symbol=args.symbol, side="BUY", entry_price=entry_price, stop_price=stop,
                          take_profit_price=entry_price + 3 * (entry_price - stop), strategy="testnet-roundtrip",
                          horizon_hours=1, invalidation="testnet round trip: closed after the hold")
-    out.write(f"  Account ........ sized as {equity:,.2f} USDT of testnet money; ask {snap.best_ask.normalize()}\n")
+    out.write(f"  Account ........ sized as {equity:,.2f} USDT of testnet money; ask {plain(snap.best_ask)}\n")
+    intent_id = new_intent_id()
+    book.add_pending(intent_id, args.symbol, rules.base_asset, time.time())
+    book.save()                                              # written before anything is sent
     try:
-        outcome = entry.submit(intent, state, snap, rules, wide, trader, new_intent_id(), "majors", sleep=sleep)
+        outcome = entry.submit(intent, state, snap, rules, wide, trader, intent_id, "majors", sleep=sleep)
     except OrderStatusUnknown as e:
-        out.write(f"  Entry .......... OUTCOME UNKNOWN: {e}\n  Check the testnet account before running again.\n")
+        out.write(f"  Entry .......... OUTCOME UNKNOWN: {e}\n  The trade stays PENDING in the ledger; run "
+                  f"bot reconcile to settle it before anything else.\n")
         return 3
+    _ledger_entry(book, outcome, intent_id.hex, rules.base_asset)
     p = outcome.plan
     out.write(f"  Risk engine .... {'accepted' if outcome.decision.accepted else 'REJECTED'}: {outcome.decision.reason}\n")
     if p is not None:
-        out.write(f"  Order list ..... BUY {p.qty.normalize()} at {p.entry_price.normalize()} fill-or-kill; "
-                  f"stop {p.stop_type} {p.stop_price.normalize()}"
-                  f"{f' (limit {p.stop_limit_price.normalize()})' if p.stop_limit_price else ''}; "
-                  f"take-profit {p.take_profit_price.normalize()}\n")
+        out.write(f"  Order list ..... BUY {plain(p.qty)} at {plain(p.entry_price)} fill-or-kill; "
+                  f"stop {p.stop_type} {plain(p.stop_price)}"
+                  f"{f' (limit {plain(p.stop_limit_price)})' if p.stop_limit_price else ''}; "
+                  f"take-profit {plain(p.take_profit_price)}\n")
     out.write(f"  Entry .......... {outcome.status}: {outcome.reason}\n")
+    bought = roundtrip.avg_price(outcome.entry)
+    if bought is not None:
+        out.write(f"  Filled ......... bought {plain(outcome.entry.executed_qty)} at {fmt(bought)} "
+                  f"({fmt(outcome.entry.quote_qty)} USDT); received {plain(outcome.received_qty)}\n")
     for n in outcome.notes:
         out.write(f"  Note ........... {n}\n")
     if outcome.status == entry.UNPROTECTED:
@@ -279,19 +298,149 @@ def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=N
         roundtrip.record(journal_dir, rt, time.time())
         return 3
     if outcome.status == entry.PROTECTED:
-        out.write(f"  Protection ..... stop {outcome.stop.status} {outcome.stop.orig_qty.normalize()}, take-profit "
-                  f"{outcome.take_profit.status} {outcome.take_profit.orig_qty.normalize()}; holding {args.hold:g} s\n")
+        out.write(f"  Protection ..... stop {outcome.stop.status} {plain(outcome.stop.orig_qty)}, take-profit "
+                  f"{outcome.take_profit.status} {plain(outcome.take_profit.orig_qty)}; holding {args.hold:g} s\n")
         sleep(args.hold)
     rt = roundtrip.close(outcome, trader, rules) if outcome.status == entry.PROTECTED else \
         roundtrip.RoundTrip(outcome, problems=[f"entry was {outcome.status}"])
+    if outcome.status == entry.PROTECTED:
+        _ledger_close(book, rt)
     if rt.close is not None:
-        out.write(f"  Close .......... SELL {rt.close.executed_qty.normalize()} at market: {rt.close.status}\n")
+        sold = roundtrip.avg_price(rt.close)
+        out.write(f"  Close .......... SELL {plain(rt.close.executed_qty)} at market: {rt.close.status}"
+                  f"{f' at {fmt(sold)}' if sold is not None else ''}\n")
+    pnl = roundtrip.pnl_usdt(rt)
+    if pnl is not None:
+        paid = ", ".join(f"{plain(q)} {a}" for a, q in sorted(roundtrip.fees(rt).items())) or "none reported"
+        out.write(f"  P&L ............ {pnl:+,.2f} USDT before fees (testnet money); fees: {paid}\n")
+    after = _reconcile(book, trader, reader, out, "After")
+    if not after.clean:
+        rt.problems.append("reconciliation after the trade is not clean")
+        rt.clean = False
     for problem in rt.problems:
         out.write(f"  Problem ........ {problem}\n")
     clean = roundtrip.record(journal_dir, rt, time.time())
     out.write(f"Result: {'CLEAN round trip' if rt.clean else 'NOT clean'}. Clean round trips so far: "
               f"{clean} of {roundtrip.GATE} (journal: {journal_dir / roundtrip.JOURNAL})\n")
+    if after.unprotected:
+        return 3
     return 0 if rt.clean else 1
+
+
+def _ledger_entry(book, outcome, intent_id: str, base_asset: str) -> None:
+    """Record what the entry did. PENDING becomes OPEN (coins held), CLOSED (sold again) or NOT_OPENED."""
+    from bot.execution import entry
+    from bot.execution.ledger import CLOSED, NOT_OPENED, OPEN
+
+    iid, now = intent_id, time.time()
+    held = outcome.received_qty or (entry.received_qty(outcome.entry, base_asset) if outcome.entry else 0)
+    if outcome.status in (entry.PROTECTED, entry.UNPROTECTED):
+        book.mark(iid, OPEN, now, received_qty=held, note=outcome.status)
+    elif outcome.status == entry.EMERGENCY_EXIT:
+        book.mark(iid, CLOSED, now, received_qty=held, left_qty=held - outcome.exit.executed_qty,
+                  note="emergency exit")
+    else:
+        book.mark(iid, NOT_OPENED, now, note=f"{outcome.status}: {outcome.reason}"[:200])
+    book.save()
+
+
+def _ledger_close(book, rt) -> None:
+    """CLOSED once the closing sale (or a protective order) filled; otherwise the trade stays OPEN."""
+    from bot.execution.ledger import CLOSED
+
+    legs = [o for o in (rt.close, rt.stop_after, rt.take_profit_after) if o is not None]
+    if not any(o.status == "FILLED" for o in legs):
+        return
+    sold = sum((o.executed_qty for o in legs), D(0))
+    book.mark(rt.entry.plan.entry_client_id[-32:], CLOSED, time.time(), left_qty=rt.entry.received_qty - sold,
+              note="closed by the round trip")
+    book.save()
+
+
+def _tolerances(reader, assets) -> dict:
+    """One step of each coin's USDT market: Binance rounds quantities to it."""
+    symbols = [f"{a}USDT" for a in sorted(assets) if a != "USDT"]
+    rules = reader.symbol_rules(symbols) if symbols else {}
+    return {r.base_asset: max(r.step_size, r.market_step_size or D(0)) for r in rules.values()}
+
+
+def _reconcile(book, trader, reader, out, label: str):
+    """Reconcile, record the certain updates, and print what was found."""
+    from bot.exchange.binance import ExchangeError
+    from bot.execution import reconcile
+
+    assets = set(book.baseline) | {t.base_asset for t in book.trades.values()}
+    try:
+        tol = _tolerances(reader, assets)
+    except ExchangeError as e:
+        rec = reconcile.Reconciliation(errors=[f"could not read the exchange rules: {e}"])
+    else:
+        rec = reconcile.reconcile(book, trader, tol, time.time())
+        reconcile.apply(book, rec, time.time())
+    out.write(f"  {label + ' check':.<16} reconciliation {'CLEAN' if rec.clean else 'NOT CLEAN'}\n")
+    for kind, items in (("UNPROTECTED", rec.unprotected), ("Mismatch", rec.mismatches),
+                        ("Waiting", rec.unsettled), ("Error", rec.errors)):
+        for i in items:
+            out.write(f"    {kind}: {i}\n")
+    for u in rec.updates:
+        out.write(f"    Recorded: trade {u.intent_id[:8]} is now {u.status} ({u.note})\n")
+    return rec
+
+
+def _reconcile_cmd(args: argparse.Namespace, make_trader=None, make_reader=None, load_creds=None, out=None) -> int:
+    """Compare the testnet ledger with the testnet account; or record a new baseline (operator).
+    Exit codes: 0 clean (or baseline recorded), 1 not clean, 2 setup problem, 3 coins unprotected."""
+    from bot.exchange.binance import BinanceReadOnly, ExchangeError
+    from bot.exchange.credentials import CredentialsError, load_credentials
+    from bot.exchange.trading import BinanceTrader
+    from bot.execution.ledger import Ledger, LedgerError
+
+    out = out or sys.stdout
+    cfg = load_config(args.config)
+    journal_dir = Path(os.path.expanduser(args.journal_dir))
+    load_creds = load_creds or (lambda: load_credentials(prefix="BINANCE_TESTNET"))
+    out.write(f"Reconciliation: testnet ledger ({journal_dir}) vs the testnet account (read-only; places nothing)\n")
+    try:
+        creds = load_creds()
+        book = Ledger.load(journal_dir, "testnet")
+    except (CredentialsError, LedgerError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    trader = (make_trader or BinanceTrader)(environment="testnet", credentials=creds)
+    reader = (make_reader or BinanceReadOnly)(environment="testnet")
+    if args.set_baseline:
+        if not args.operator or not args.reason:
+            print("Error: --set-baseline needs --operator and --reason", file=sys.stderr)
+            return 2
+        assets = sorted({s[:-4] for s in [*cfg.universe, *args.symbols]})
+        try:
+            if trader.open_orders(None):
+                print("Error: the testnet account has open orders; a baseline is recorded only with none open",
+                      file=sys.stderr)
+                return 2
+            totals = {b.asset: b.total for b in trader.account().balances}
+            book.set_baseline({a: totals.get(a, D(0)) for a in assets}, args.operator, args.reason, time.time())
+        except (ExchangeError, LedgerError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 2
+        book.save()
+        for a in assets:
+            out.write(f"  Baseline ....... {a} {plain(book.baseline[a])} (not the bot's)\n")
+        out.write(f"Result: BASELINE RECORDED ({book.baseline_note}).\n")
+        return 0
+    if not book.baseline:
+        print("Error: no baseline yet: bot reconcile --set-baseline --operator NAME --reason \"...\"", file=sys.stderr)
+        return 2
+    rec = _reconcile(book, trader, reader, out, "Account")
+    for c in rec.checked:
+        out.write(f"    OK: {c}\n")
+    active = book.active()
+    out.write(f"  Ledger ......... {len(book.trades)} trades, {len(active)} open or pending\n")
+    out.write("Result: " + ("CLEAN. New entries may go ahead." if rec.clean else
+                            "NOT CLEAN. New entries stay blocked until this is fixed.") + "\n")
+    if rec.unprotected:
+        return 3
+    return 0 if rec.clean else 1
 
 
 DEFAULT_PAPER_DIR = "~/paper"
@@ -884,6 +1033,14 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("--equity", default="1000", help="testnet USDT the risk engine sizes the trade on")
     tr.add_argument("--hold", type=float, default=10.0, help="seconds to hold before closing")
     tr.add_argument("--journal-dir", default=DEFAULT_TESTNET_DIR)
+    rc = sub.add_parser("reconcile", help="compare the testnet ledger with the testnet account (places nothing)")
+    rc.add_argument("--journal-dir", default=DEFAULT_TESTNET_DIR)
+    rc.add_argument("--set-baseline", action="store_true",
+                    help="operator: record the coins the account holds that are not the bot's")
+    rc.add_argument("--symbols", nargs="*", default=["BTCUSDT", "ETHUSDT", "XRPUSDT", "BNBUSDT"],
+                    help="coins to watch, besides the config universe")
+    rc.add_argument("--operator")
+    rc.add_argument("--reason", help="10+ characters")
     pp = sub.add_parser("paper", help="paper trading on live prices with simulated money")
     psub = pp.add_subparsers(dest="paper_cmd", required=True)
     pr = psub.add_parser("run", help="run paper trading until stopped (used by the bot-paper service)")
@@ -963,7 +1120,7 @@ def main(argv: list[str] | None = None) -> int:
                     "block": _paper_request("block"), "trade": _paper_request("trade")}[args.paper_cmd](args)
         return {"check-config": _check_config, "try-trade": _try_trade,
                 "check-binance": _check_binance, "check-trading": _check_trading,
-                "testnet-roundtrip": _testnet_roundtrip}[args.cmd](args)
+                "testnet-roundtrip": _testnet_roundtrip, "reconcile": _reconcile_cmd}[args.cmd](args)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2

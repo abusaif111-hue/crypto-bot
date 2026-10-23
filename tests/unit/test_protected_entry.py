@@ -292,6 +292,10 @@ def test_the_command_runs_one_round_trip_and_counts_it(tmp_path, monkeypatch):
             ex.install(req)
             return super().place_protected_entry(req, rules, fee_rate)
 
+    from bot.execution.ledger import Ledger
+    book = Ledger.load(tmp_path, "testnet")
+    book.baseline = {"BTC": Dec(0)}                                         # 5c: reconciled before and after
+    book.save()
     args = argparse.Namespace(config="config/default.yaml", symbol="BTCUSDT", stop_pct="1.5", equity="1000",
                               hold=0, journal_dir=str(tmp_path))
     out = io.StringIO()

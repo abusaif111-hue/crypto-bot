@@ -49,6 +49,11 @@ def is_multiple(value: Decimal, step: Decimal) -> bool:
     return D(step) > 0 and D(value) % D(step) == 0
 
 
+def plain(value: object) -> str:
+    """Exact decimal text without an exponent: 81450.00 -> '81450', 0.00010 -> '0.0001' (never '8.145E+4')."""
+    return format(D(value).normalize(), "f")
+
+
 def fmt(value: object) -> str:
     """Short form for people to read (logs, status). Never used in calculations.
 
