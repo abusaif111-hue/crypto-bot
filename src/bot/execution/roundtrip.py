@@ -85,14 +85,39 @@ def record(journal_dir: Path, rt: RoundTrip, now: float) -> int:
         "stop": str(plan.stop_price) if plan else None, "take_profit": str(plan.take_profit_price) if plan else None,
         "stop_type": plan.stop_type if plan else None, "received": str(e.received_qty),
         "bought_usdt": str(e.entry.quote_qty) if e.entry else None,
-        "sold_usdt": str(_sold_usdt(rt)), "notes": e.notes}
+        "sold_usdt": str(_sold_usdt(rt)), "fees": {a: str(q) for a, q in fees(rt).items()}, "notes": e.notes}
     with open(journal_dir / JOURNAL, "a") as f:
         f.write(json.dumps(row) + "\n")
     return clean_count(journal_dir)
 
 
+def avg_price(o: OrderState | None) -> Decimal | None:
+    """Average fill price of an order, or None if nothing filled."""
+    if o is None or o.executed_qty <= 0:
+        return None
+    return o.quote_qty / o.executed_qty
+
+
+def pnl_usdt(rt: RoundTrip) -> Decimal | None:
+    """USDT received from the sales less USDT spent on the buy, before fees; None if nothing was bought."""
+    e = rt.entry.entry
+    if e is None or e.executed_qty <= 0:
+        return None
+    return _sold_usdt(rt) - e.quote_qty
+
+
+def fees(rt: RoundTrip) -> dict[str, Decimal]:
+    """Fees Binance reported in the fills of the buy and the closing sale, per asset. A protective order that
+    filled is looked up without its fills, so its fee is not included."""
+    out: dict[str, Decimal] = {}
+    for o in (rt.entry.entry, rt.entry.exit, rt.close):
+        for f in (o.fills if o is not None else ()):
+            out[f.commission_asset] = out.get(f.commission_asset, ZERO) + f.commission
+    return out
+
+
 def _sold_usdt(rt: RoundTrip) -> Decimal:
-    orders = [o for o in (rt.close, rt.stop_after, rt.take_profit_after) if o is not None]
+    orders = [o for o in (rt.close, rt.stop_after, rt.take_profit_after, rt.entry.exit) if o is not None]
     return sum((o.quote_qty for o in orders), ZERO)
 
 

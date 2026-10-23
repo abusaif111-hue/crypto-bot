@@ -297,7 +297,7 @@ adapter, which stays read-only:
   order has filled, so a blind retry could buy twice. When an order's outcome is unknown
   (timeout, network error, Binance's "execution status unknown"), the adapter never re-sends it:
   it looks the order up by its ID, and if Binance still cannot say, it reports "outcome unknown"
-  so new entries stay blocked until reconciliation (step 5c) finds it.
+  so new entries stay blocked until reconciliation (step 5c) settles it.
 - Orders are checked against Binance's rules before sending (price and size steps, minimum
   order value). An entry is always a limit order with a price cap; a market order is allowed
   only to sell (an exit).
@@ -334,9 +334,37 @@ cd ~/crypto-bot && .venv/bin/bot testnet-roundtrip                # BTCUSDT, sto
 ```
 
 It enters, confirms the protection, holds, cancels the protection, sells, and checks that nothing of
-the trade is left open. Each attempt goes to `~/testnet/roundtrips.jsonl`; only clean ones count.
+the trade is left open. It prints the fill prices and the P&L before fees (testnet money). Each
+attempt goes to `~/testnet/roundtrips.jsonl`; only clean ones count. The Stage 5 gate was met on
+23 Oct 2026: 5 clean BTC round trips.
 
-Next: 5c reconciliation, 5d the testnet runner (H2b placing real testnet orders), 5e alerts.
+**Reconciliation (5c, `bot.execution.ledger` and `bot.execution.reconcile`).** The bot keeps its
+own record of its exchange trades, the ledger (`~/testnet/ledger.json`). A trade is written there
+*before* its order is sent, so after a crash or a timeout it can always be looked up by its ID.
+Reconciliation compares the ledger with Binance and only reads; it never places or cancels anything:
+
+- a trade whose outcome was not recorded is looked up; not found after 5 minutes means it was never
+  placed;
+- every open trade must have both protective orders open for the coins held. If one filled, Binance
+  closed the trade; if both are gone and no closing sale filled, the coins are **unprotected**;
+- every open order on the account must be one of the bot's open trades;
+- each watched coin's balance must equal the baseline (coins that are not the bot's) plus the coins
+  of open trades, within one step. USDT is not compared: it moves with prices, fees and P&L.
+
+Anything that differs blocks new entries until an operator looks. `testnet-roundtrip` reconciles
+before it starts (and refuses if the result is not clean) and again after the close. Once, before
+the next round trip, record the baseline (the coins Binance gives every testnet account):
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot reconcile --set-baseline --operator Sultan --reason "testnet account as given"
+.venv/bin/bot reconcile                   # CLEAN, or what differs; places nothing
+```
+
+If Binance resets the testnet account, the balances no longer match: check that no trade is open,
+then record a new baseline. Fees paid in BNB move the BNB balance, which also shows as a mismatch.
+Verify on testnet: how soon an order that timed out can be looked up (the 5-minute wait).
+
+Next: 5d the testnet runner (H2b placing real testnet orders), 5e alerts.
 
 ## How a trade is sized
 
@@ -456,7 +484,7 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
 4. H2b (`docs/h2b-plan.md`): the strategy, paged candle history, the stricter holdout lock,
    strategies in the paper runner and the forward test (start, run, status, end-of-test report) are
    done; H2b passed the walk-forward check (23 Oct 2026); the forward test is Sultan's to start
-5. Order execution on the testnet: 5a trading adapter and 5b protected entries with testnet round
-   trips done; next reconciliation, the testnet runner and alerts
+5. Order execution on the testnet: 5a trading adapter, 5b protected entries (gate met: 5 clean
+   round trips) and 5c reconciliation done; next the testnet runner and alerts
 6. Dashboard and Telegram alerts
 7. News and AI analysis (advisory only)
