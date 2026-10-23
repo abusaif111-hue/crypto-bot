@@ -7,6 +7,7 @@
     bot testnet-roundtrip [--symbol BTCUSDT]              (one protected trade on the testnet, fake money)
     bot reconcile [--set-baseline --operator NAME --reason "..."]   (testnet ledger vs account; places nothing)
     bot testnet start | run | status | resume | block     (H2b on the testnet: real orders, fake money)
+    bot alerts setup | test | run                         (Telegram alerts)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
     bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b)
@@ -569,6 +570,107 @@ def _testnet_status(args: argparse.Namespace, out=None) -> int:
     for t in by[OPEN] + by[PENDING]:
         out.write(f"  {t.status:<8} {t.symbol} {plain(t.received_qty)} bought {fmt(t.entry_price)}, stop "
                   f"{fmt(t.stop_price)}, take-profit {fmt(t.take_profit_price)} ({t.strategy or '?'})\n")
+    return 0
+
+
+def _alerts_setup(args: argparse.Namespace, read_secret=None, ask=None, telegram=None, sleep=time.sleep,
+                  out=None) -> int:
+    """Connect the bot to Sultan's Telegram: the token is typed hidden, the chat is found when he messages
+    the bot, both go into .env (mode 600), and a test message is sent. Nothing secret is printed."""
+    import getpass
+
+    from bot.alerts import Telegram, TelegramError
+    from bot.exchange.credentials import env_path, is_telegram_token, set_env_values
+
+    out = out or sys.stdout
+    read_secret = read_secret or (lambda prompt: getpass.getpass(prompt))
+    ask = ask or input
+    token = read_secret("Paste the token @BotFather gave you (it stays hidden), then press Enter: ").strip()
+    if not is_telegram_token(token):
+        print("Error: that does not look like a token from @BotFather (digits, a colon, then letters). "
+              "Nothing was saved.", file=sys.stderr)
+        return 2
+    tg = (telegram or Telegram)(token)
+    try:
+        me = tg.call("getMe", {})
+        out.write(f"Token OK: your bot is @{me.get('username')}.\n")
+        out.write(f"Now open Telegram, search for @{me.get('username')}, press Start (or send it any message).\n"
+                  "Waiting up to 3 minutes...\n")
+        chat = None
+        for _ in range(60):
+            updates = tg.call("getUpdates", {"timeout": 0})
+            for u in updates or ():
+                c = (u.get("message") or {}).get("chat") or {}
+                if c.get("type") == "private":
+                    chat = c
+            if chat:
+                break
+            sleep(3)
+    except TelegramError as e:
+        print(f"Error: {e}. Nothing was saved.", file=sys.stderr)
+        return 2
+    if not chat:
+        print("Error: no message reached the bot in 3 minutes. Nothing was saved; run this again.", file=sys.stderr)
+        return 2
+    who = " ".join(x for x in (chat.get("first_name"), chat.get("last_name")) if x) or "?"
+    handle = f" (@{chat['username']})" if chat.get("username") else ""
+    if ask(f"A message came from {who}{handle}. Is that you? Type yes to save: ").strip().lower() not in ("y", "yes"):
+        print("Not saved. Run this again and send the bot a message from your own Telegram.", file=sys.stderr)
+        return 2
+    path = env_path()
+    set_env_values(path, {"TELEGRAM_BOT_TOKEN": token, "TELEGRAM_CHAT_ID": str(chat["id"])})
+    try:
+        Telegram(token, str(chat["id"]), transport=getattr(tg, "transport", None)).send(
+            "🟢 Crypto bot alerts are set up. Messages about the bot will come here.")
+    except TelegramError as e:
+        print(f"Saved in {path}, but the test message failed: {e}", file=sys.stderr)
+        return 4
+    out.write(f"Saved in {path} (readable only by you). A test message was sent: check Telegram.\n")
+    return 0
+
+
+def _alerts_test(args: argparse.Namespace, load=None, telegram=None, out=None) -> int:
+    from bot.alerts import Telegram, TelegramError
+    from bot.exchange.credentials import CredentialsError, load_telegram
+
+    out = out or sys.stdout
+    try:
+        t = (load or load_telegram)()
+        (telegram or Telegram)(t.token, t.chat_id).send("🟢 Test from the crypto bot: alerts work.")
+    except (CredentialsError, TelegramError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    out.write("Sent. Check Telegram.\n")
+    return 0
+
+
+def _alerts_run(args: argparse.Namespace, load=None, telegram=None) -> int:
+    """The alert service (bot-alerts): reads the runners' journals, sends what matters to Telegram."""
+    from bot.alerts import AlertService, Telegram, Watcher
+    from bot.exchange.credentials import CredentialsError, load_telegram
+
+    try:
+        t = (load or load_telegram)()
+    except CredentialsError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    home = Path(os.path.expanduser(args.home))
+    watcher = Watcher.open(home, Path(os.path.expanduser(args.state_dir)), time.time())
+    service = AlertService(watcher, (telegram or Telegram)(t.token, t.chat_id),
+                           log=lambda m: print(f"{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}Z {m}",
+                                               flush=True))
+    service.queue.append("🟢 alerts: watching " + ", ".join(
+        s for s in watcher.sources if watcher.path(s).exists()) + " (daily check at 08:00 Muscat)")
+
+    def stop(signum, frame):
+        service.stop_requested = True
+
+    old = {s: signal.signal(s, stop) for s in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        service.run(interval_s=args.interval, max_ticks=args.ticks)
+    finally:
+        for s, h in old.items():
+            signal.signal(s, h)
     return 0
 
 
@@ -1179,6 +1281,15 @@ def main(argv: list[str] | None = None) -> int:
         q.add_argument("--reason", required=True, help="10+ characters")
     for q in tsub.choices.values():
         q.add_argument("--state-dir", default=DEFAULT_TESTNET_DIR, help="ledger and account folder")
+    al = sub.add_parser("alerts", help="Telegram alerts: set up, test, run (the bot-alerts service)")
+    asub = al.add_subparsers(dest="alerts_cmd", required=True)
+    asub.add_parser("setup", help="connect your Telegram (the token is typed hidden; nothing secret is shown)")
+    asub.add_parser("test", help="send a test message")
+    ar = asub.add_parser("run", help="watch the runners' journals and send alerts (used by the service)")
+    ar.add_argument("--interval", type=float, default=30.0, help="seconds between checks")
+    ar.add_argument("--ticks", type=int, default=None, help=argparse.SUPPRESS)
+    ar.add_argument("--home", default="~", help="the folder holding testnet/, paper/ and forward-h2b/")
+    ar.add_argument("--state-dir", default="~/alerts", help="where the alert service keeps its place")
     rc = sub.add_parser("reconcile", help="compare the testnet ledger with the testnet account (places nothing)")
     rc.add_argument("--journal-dir", default=DEFAULT_TESTNET_DIR)
     rc.add_argument("--set-baseline", action="store_true",
@@ -1261,6 +1372,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "forward":
             return {"start": _forward_start, "run": _forward_run, "status": _forward_status, "report": _forward_report,
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
+        if args.cmd == "alerts":
+            return {"setup": _alerts_setup, "test": _alerts_test, "run": _alerts_run}[args.alerts_cmd](args)
         if args.cmd == "testnet":
             return {"start": _testnet_start, "run": _testnet_run, "status": _testnet_status,
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.testnet_cmd](args)

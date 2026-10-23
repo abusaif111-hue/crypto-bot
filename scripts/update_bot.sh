@@ -31,7 +31,7 @@ else
 fi
 
 services=()
-for s in bot-paper bot-forward bot-testnet; do
+for s in bot-paper bot-forward bot-testnet bot-alerts; do
   if systemctl is-enabled "$s" >/dev/null 2>&1; then services+=("$s"); fi
 done
 if [[ ${#services[@]} -gt 0 ]]; then
