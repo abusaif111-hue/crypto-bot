@@ -72,7 +72,7 @@ data, and prints whether it is accepted, the size, the worst planned loss and wh
 3. Connect Binance **read-only** (only useful once module 2 is installed):
    ```bash
    su - bot
-   bash ~/crypto-bot/scripts/make_binance_key.sh
+   bash ~/crypto-bot/scripts/make_binance_key.sh --live-read-only
    ```
    It creates the key on the server, shows the public key to paste into Binance
    (API Management > Create API > Self-generated), and stores the API key you

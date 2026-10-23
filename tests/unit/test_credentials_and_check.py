@@ -86,3 +86,15 @@ def test_check_stops_on_trading_key(capsys):
 def test_check_reports_missing_key(capsys):
     code, out = run_check(capsys, creds_error="BINANCE_API_KEY is not set")
     assert code == 2 and "NOT READY" in out
+
+
+@pytest.mark.parametrize("args", [[], ["--testnett"], ["--live"], ["--testnet", "--live-read-only"]])
+def test_the_key_script_refuses_a_missing_or_unknown_option(tmp_path, args):
+    """A typo must never overwrite the wrong key: the script stops before touching anything."""
+    import subprocess
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[2] / "scripts" / "make_binance_key.sh"
+    r = subprocess.run(["bash", str(script), *args], capture_output=True, text=True, timeout=30,
+                       env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}, input="")
+    assert r.returncode == 1 and "nothing was changed" in (r.stderr + r.stdout).lower(), r.stderr
+    assert not (tmp_path / ".secrets").exists()

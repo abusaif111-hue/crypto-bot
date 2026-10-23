@@ -69,7 +69,8 @@ def load_credentials(env_file: Path | None = None, environ: dict[str, str] | Non
     if not api_key:
         raise CredentialsError(
             f"{key_name} is not set (looked in the environment and {env_path}). "
-            "Run scripts/make_binance_key.sh to store it.")
+            f"Run scripts/make_binance_key.sh {'--testnet' if prefix == 'BINANCE_TESTNET' else '--live-read-only'} "
+            f"to store it.")
     if not api_key.isalnum() or not 16 <= len(api_key) <= 128:
         raise CredentialsError(f"{key_name} does not look like a Binance API key (letters and digits only)")
     if not key_path:
