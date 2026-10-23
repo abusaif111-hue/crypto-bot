@@ -18,7 +18,7 @@ and paper-trading simulator) are done:
 | Market data service | `src/bot/market/data.py` | Builds the price, spread, volume, depth, data-age and clock-skew snapshot the risk engine needs; any failure blocks new entries |
 | Paper-trading simulator | `src/bot/paper/sim.py`, `src/bot/paper/fills.py` | Simulated exchange with 10,000 USDT of simulated money; every entry goes through the risk engine; fills pay the 0.1% taker fee and slippage; exits by simulated stop-loss, take-profit and time stop |
 | Paper-trading runner | `src/bot/paper/runner.py`, `src/bot/paper/store.py` | `bot paper run` checks live prices every 5 seconds, fills simulated exits, logs every decision and trade, and saves the account after every check so restarts lose nothing |
-| Backtesting, step 1 of 3 | `src/bot/backtest/`, `src/bot/analysis/`, `src/bot/strategies/` | Downloads and checks price history, replays it through the paper-trading simulator and the risk engine, and reports the baselines (cash, buy-and-hold, 50/50, random entries). The last 12 months are locked away for the final test |
+| Backtesting, steps 1-2 of 3 | `src/bot/backtest/`, `src/bot/analysis/`, `src/bot/strategies/` | Downloads and checks price history, replays it through the paper-trading simulator and the risk engine, reports the baselines, and tests strategies H1-H3 with walk-forward and robustness checks against the selection rule. The last 12 months are locked away for the final test |
 
 **The bot cannot trade yet.** It reads from Binance but has no code that sends orders.
 The paper-trading simulator only moves simulated money inside the program.
@@ -35,7 +35,7 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-pytest                              # 215 tests, about 25 seconds
+pytest                              # 245 tests, about 45 seconds
 bot check-config
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 --loss-today 150
@@ -104,7 +104,7 @@ restart it as root afterwards (`systemctl restart bot-paper`) and resume entries
 (`paper resume ...`). To pick up a new version of the `paper` command itself, run
 `install_paper_service.sh` again; it keeps the paper account.
 
-## Backtesting (step 1 of 3: data and baselines)
+## Backtesting (steps 1 and 2 of 3)
 
 On the server, as the `bot` user (`su - bot`, then `cd ~/crypto-bot`):
 
@@ -135,7 +135,34 @@ bot backtest baselines              # cash, buy-and-hold BTC, 50/50 BTC/ETH, 200
 - **Every report** records the git commit, a config fingerprint, the data range, the cost
   model and the limits of simulation.
 
-Strategies H1-H3, walk-forward testing and robustness checks are step 2.
+### Step 2: strategies H1-H3
+
+```bash
+nohup bot backtest run > ~/backtests/run.log 2>&1 &     # about an hour; keeps going if the console closes
+tail -f ~/backtests/run.log                             # watch progress (Ctrl+C stops watching, not the run)
+```
+
+| Strategy | Idea (design package) | Tunable settings (defaults) |
+| --- | --- | --- |
+| H1 | 4h breakout above the recent range high while the daily close is above its 50-day average; ATR stop trailed behind the highest close; time stop | range candles (30), ATR multiple (2.5), horizon hours (168) |
+| H2 | Daily time-series momentum: hold while the multi-week return beats a volatility-scaled threshold; sell when it turns negative | lookback weeks (4), threshold (0.5), ATR multiple (3) |
+| H3 | Buy oversold 4h dips (RSI) only when the daily average is flat (range regime); sell when RSI is back above 50; short time stop | oversold level (30), regime days (20), time stop hours (24) |
+
+- **Walk-forward:** 8 test windows of 6 months (2022-01 to 2025-09). For each, the settings
+  are chosen on the 24 months before it from 27 combinations (each setting at 80/100/120%),
+  by net profit per unit of drawdown with at least 20 trades; then tested once on the unseen
+  window.
+- **Two modes (Sultan's decision):** *as deployed*, the 6% drawdown breaker stops trading;
+  *edge measurement* records each breach, resets the peak and keeps measuring. The reset
+  exists only in backtests.
+- **Selection rule** (all must pass on walk-forward, then the holdout): positive expectancy
+  after doubled costs; every test window below the 6% breaker as deployed; at least 100
+  out-of-sample trades; not driven by one coin or one month; no collapse when a setting
+  moves 20%; better than random entries with the same exits (95th percentile).
+- Reports also break results down by coin and by market regime at entry (bull, bear,
+  sideways, high volatility; rules fixed before testing).
+- The paper runner does not yet apply a strategy's own exits (trailing stop, exit signals);
+  that is added if a strategy passes, before it paper trades.
 
 ## How a trade is sized
 

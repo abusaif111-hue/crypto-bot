@@ -6,17 +6,23 @@ with the same fees, slippage and exits.
 
 For each candle, in time order:
 1. at its open: exits triggered by the opening price (a gap through a stop
-   fills here), then the ideas proposed at the previous close are submitted and
-   fill at the opening ask;
+   fills here); then the strategy's exit actions from the previous close (raise
+   a stop, exit at market); then the ideas proposed at the previous close are
+   submitted and fill at the opening ask;
 2. the candle itself: stop-loss / take-profit / time stop (stop first if one
    candle touches both);
 3. at its close: equity is marked (breakers update) and the strategy, seeing
-   only finished candles, proposes ideas for the next open.
+   only finished candles, decides exits and proposes ideas for the next open.
 
 Breakers: when a daily or weekly limit blocks entries, the run resumes entries
 as soon as the breaker has cleared (modelling Sultan resuming after review).
-The drawdown breaker needs a review and never clears in a backtest: trading
-stops for the rest of the run, and the report says when.
+The 6% drawdown breaker (approved by Sultan, two modes):
+- as deployed (`edge=False`): it never clears; trading stops for the rest of the
+  run, and the report says when. This shows whether the strategy survives the rules.
+- edge measurement (`edge=True`): each breach is recorded, then the drawdown peak
+  is reset (as if Sultan reviewed and restarted at the current level) so the
+  whole period is measured. All other limits apply unchanged. This mode exists
+  only in backtests; paper and live trading have no such reset.
 """
 from __future__ import annotations
 
@@ -32,7 +38,7 @@ from bot.exchange.interface import Candle
 from bot.paper.sim import STARTING_QUOTE, ClosedTrade, Fill, SimExchange
 from bot.risk.models import Mode, RejectCode, TradeIntent
 from bot.risk.modes import Transition
-from bot.strategies.base import Strategy
+from bot.strategies.base import Action, Exit, OpenTrade, RaiseStop, Strategy
 
 POLICY_OPERATOR = "backtest-policy"
 
@@ -59,13 +65,15 @@ class BacktestResult:
     fills: list[Fill] = field(default_factory=list)
     outcomes: Counter = field(default_factory=Counter)      # filled / not filled / reject codes
     mode_events: list[Transition] = field(default_factory=list)
-    drawdown_halt_ms: int | None = None
+    drawdown_halt_ms: int | None = None                      # as deployed: when trading stopped
+    drawdown_events: list[int] = field(default_factory=list)  # edge mode: every breach
+    edge: bool = False
     open_at_end: list[str] = field(default_factory=list)
 
 
 def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, SymbolRules], cfg: AppConfig,
         cost: CostModel = CostModel(), start_ms: int = RESEARCH_START_MS, end_ms: int | None = None,
-        starting_quote: Decimal = STARTING_QUOTE) -> BacktestResult:
+        starting_quote: Decimal = STARTING_QUOTE, edge: bool = False) -> BacktestResult:
     for cs in candles.values():
         assert_no_holdout(cs)
     interval = strategy.interval
@@ -85,8 +93,9 @@ def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, S
     sim.resume(POLICY_OPERATOR, "automatic start of a backtest run")
     result = BacktestResult(name=strategy.name, params=strategy.params(), symbols=symbols, interval=interval,
                             start_ms=times[0], end_ms=times[-1] + market.interval_ms,
-                            starting_equity=sim.quote, cost=cost)
+                            starting_equity=sim.quote, cost=cost, edge=edge)
     pending: list[TradeIntent] = []
+    actions: list[Action] = []
 
     for t in times:
         market.set_time(t)
@@ -95,6 +104,12 @@ def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, S
         if held:
             for s, book in market.books(held).items():          # 1. gaps at the open
                 sim.on_book(s, book, now)
+        for a in actions:                                         # 1. last close's exit decisions
+            if isinstance(a, Exit):
+                sim.close_position(a.symbol, now)
+            elif isinstance(a, RaiseStop):
+                sim.raise_stop(a.symbol, a.stop, now)
+        actions = []
         for intent in pending:                                    # 1. last close's ideas fill at this open
             r = sim.submit(intent, now)
             result.outcomes["filled" if r.filled else
@@ -111,9 +126,17 @@ def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, S
             raise ValueError(f"candles overlap at {t}: one coin's candle is still open when another's starts")
         market.set_time(close_ms)
         _apply_resume_policy(sim, close_ms / 1000)
-        if result.drawdown_halt_ms is None and RejectCode.DRAWDOWN.value in sim.modes.active_breaches:
-            result.drawdown_halt_ms = close_ms
+        if RejectCode.DRAWDOWN.value in sim.modes.active_breaches:
+            if edge:
+                result.drawdown_events.append(close_ms)
+                _reset_drawdown_peak(sim, close_ms / 1000)
+                _apply_resume_policy(sim, close_ms / 1000)
+            elif result.drawdown_halt_ms is None:
+                result.drawdown_halt_ms = close_ms
         result.equity.append(EquityPoint(close_ms, sim.equity(), bool(sim.positions)))
+        open_trades = [OpenTrade(p.symbol, p.entry_price, p.stop_price, p.opened_at) for p in sim.positions.values()]
+        if open_trades:
+            actions = strategy.manage(sim.data, close_ms / 1000, open_trades)
         pending = strategy.propose(sim.data, close_ms / 1000)
 
     result.trades = list(sim.trades)
@@ -121,6 +144,13 @@ def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, S
     result.mode_events = list(sim.modes.history)
     result.open_at_end = sorted(sim.positions)
     return result
+
+
+def _reset_drawdown_peak(sim: SimExchange, now: float) -> None:
+    """Edge mode only: record the review and restart the drawdown measure at the current level."""
+    sim.index.peak_value_per_unit = sim.index.value_per_unit
+    sim.modes.complete_drawdown_review(POLICY_OPERATOR, "edge measurement: breach recorded, peak reset",
+                                       sim.account_state(now))
 
 
 def _apply_resume_policy(sim: SimExchange, now: float) -> None:
