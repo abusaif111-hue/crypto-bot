@@ -23,6 +23,11 @@ The 6% drawdown breaker (approved by Sultan, two modes):
   is reset (as if Sultan reviewed and restarted at the current level) so the
   whole period is measured. All other limits apply unchanged. This mode exists
   only in backtests; paper and live trading have no such reset.
+
+Forward replay (`forward_from`, the forward test's end-of-test report only): candles after the
+holdout end are allowed, and so are earlier ones as indicator history, but nothing trades or is
+measured before `forward_from`, which must be on or after 2026-10-01. It cannot run on the
+holdout year.
 """
 from __future__ import annotations
 
@@ -74,8 +79,13 @@ class BacktestResult:
 def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, SymbolRules], cfg: AppConfig,
         cost: CostModel = CostModel(), start_ms: int = RESEARCH_START_MS, end_ms: int | None = None,
         starting_quote: Decimal = STARTING_QUOTE, edge: bool = False,
-        corr_groups: dict[str, str] | None = None, holdout: HoldoutTicket | None = None) -> BacktestResult:
-    if holdout is None:
+        corr_groups: dict[str, str] | None = None, holdout: HoldoutTicket | None = None,
+        forward_from: int | None = None) -> BacktestResult:
+    if forward_from is not None:
+        if holdout is not None or forward_from < HOLDOUT_END_MS or start_ms < forward_from:
+            raise HoldoutLocked("a forward replay trades only from the forward test's start, after the holdout "
+                                "(2026-10-01); earlier candles are indicator history only")
+    elif holdout is None:
         for cs in candles.values():
             assert_no_holdout(cs)
     elif not isinstance(holdout, HoldoutTicket):

@@ -181,6 +181,19 @@ def load_through_holdout(data_dir: Path, symbol: str, interval: str, ticket: Hol
     return [c for c in candles if c.close_time < HOLDOUT_END_MS]
 
 
+def load_with_forward(data_dir: Path, symbol: str, interval: str = "4h") -> list[Candle]:
+    """Every cached candle, through the forward test's months. Only for the forward test's end-of-test
+    report, whose replay cannot trade before the forward start (`engine.run(forward_from=...)`)."""
+    path = _csv_path(Path(data_dir), symbol, interval)
+    if not path.exists():
+        raise DataError(f"no history for {symbol} {interval} in {data_dir}; run: bot backtest fetch")
+    candles = read_csv(path)
+    result = check_candles(candles, interval)
+    if not result.ok:
+        raise DataError(f"{path} is damaged: " + "; ".join(result.problems[:10]))
+    return candles
+
+
 def load_rules(data_dir: Path, symbol: str) -> SymbolRules:
     path = _rules_path(Path(data_dir), symbol)
     if not path.exists():

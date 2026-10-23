@@ -255,7 +255,13 @@ toward the Stage 6 paper review. Rules from the plan (`docs/h2b-plan.md`, sectio
 - **Length:** at least 12 months and 30 closed trades, at most 24 months. If more than 10% of
   the time is missed (runner down or failing), both dates move by the time missed.
 - **Early end only for failure:** if the 6% drawdown breaker trips, H2b fails at once.
-- **Judged once, at the end**, by the end-of-test report with the 6 checks (next module).
+- **Judged once, at the end**, by `forward report` (refused while the test runs): positive
+  expectancy after doubled costs, the breaker never tripped, 30+ trades, not driven by one coin
+  or one month, and better than random entries with the same exits on the same forward prices
+  (95th percentile). The verdict is saved in `~/forward-h2b/verdict.json` and is final; asking
+  again only shows it. For information it also shows cash, buy-and-hold BTC and a replay of H2b.
+  The random-entry replays use the 13 months before the start (part of the spent holdout year)
+  only as indicator history, as the live runner does; nothing before the start is traded or measured.
 
 On the server, as root:
 
@@ -269,6 +275,14 @@ paper resume --operator Sultan --reason "restart after forward start"
 bash /home/bot/crypto-bot/scripts/install_forward_service.sh   # second time: starts the service
 forward resume --operator Sultan --reason "start the H2b forward test"
 forward status
+```
+
+When `forward status` says READY TO JUDGE (or ENDED, or FAILED):
+
+```bash
+systemctl stop bot-forward             # the account must no longer change
+systemctl stop bot-paper               # memory for the replays; start it again afterwards
+forward report --operator Sultan
 ```
 
 ## How a trade is sized
@@ -361,6 +375,10 @@ bot; `resume(operator, reason)` allows them.
   overwritten in place; settings chosen on 2023-10 to 2025-09 from research data only; changed
   H2b code or config stops it; no manual trades; the 12/24-month, 30-trade and outage rules and
   the early failure on the drawdown breaker have worked examples.
+- Forward report: each of the 6 checks fails on its own example; doubled costs add exactly one
+  more round of fees and slippage; only trades closed by the end count; the replay cannot trade
+  before the forward start or in the holdout year; it is refused while the test runs, with the
+  runner running, or on incomplete prices; the verdict is written once.
 - Candle history longer than Binance's 1,000 per request is fetched page by page, and a failed
   page fails closed.
 
@@ -376,8 +394,8 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
 ## Next modules
 
 4. H2b (`docs/h2b-plan.md`): the strategy, paged candle history, the stricter holdout lock,
-   strategies in the paper runner and the forward test (start, run, status) are done; H2b passed
-   the walk-forward check (23 Oct 2026); next the forward test's end-of-test report (6 checks)
+   strategies in the paper runner and the forward test (start, run, status, end-of-test report) are
+   done; H2b passed the walk-forward check (23 Oct 2026); the forward test is Sultan's to start
 5. Order execution with protection checks and reconciliation
 6. Dashboard and Telegram alerts
 7. News and AI analysis (advisory only)

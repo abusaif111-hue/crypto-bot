@@ -96,7 +96,11 @@ bot paper status
    (`strategy-clock.json`). The forward test is `bot.forward` + `bot forward start|run|status|resume|block`
    (service `bot-forward`, account `~/forward-h2b`): only Sultan starts it; never edit `forward.json`, never
    change `h2b_blend.py` or `strategies/base.py` while it runs (the runner refuses: a change restarts the test).
-   Next: the end-of-test report with the plan's 6 checks.
+   The end-of-test report is `bot.forward_report` + `bot forward report` (Sultan, once, after the end; verdict
+   in `verdict.json`, never overwritten). Its replays use `engine.run(forward_from=...)` and
+   `history.load_with_forward`, the only place candles from the spent holdout year may be read, as indicator
+   history before the forward start; nothing there is traded or measured (enforced by tests). Do not change
+   the report's checks after the forward test has started.
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
 6. Loss-review loop, dashboard (FastAPI, not public), Telegram alerts
 7. News + LLM, advisory/veto only

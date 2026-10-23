@@ -153,6 +153,17 @@ def test_forward_test_uses_no_adapter_no_orders_and_never_the_holdout():
         assert banned not in text, banned
 
 
+def test_forward_report_replays_only_the_forward_months():
+    f = SRC / "forward_report.py"
+    imports = imports_of(f)
+    assert "bot.exchange.binance" not in imports and not (imports & NETWORK), imports
+    assert not any(m.startswith(("bot.news", "bot.llm", "bot.execution")) for m in imports), imports
+    tree = ast.parse(f.read_text())
+    runs = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "run"]
+    assert runs and all(any(k.arg == "forward_from" for k in n.keywords) for n in runs)    # every replay is forward
+    assert "HoldoutTicket" not in f.read_text() and "holdout=" not in f.read_text()
+
+
 def test_only_the_holdout_command_can_open_the_holdout():
     """The ticket key, the holdout loader and the engine's holdout option are used in one place each."""
     for f in SRC.rglob("*.py"):
@@ -172,3 +183,7 @@ def test_only_the_holdout_command_can_open_the_holdout():
                     assert rel == "backtest/holdout.py", rel
                 if name == "run" and any(k.arg is None for k in n.keywords):     # run(**common) carries holdout
                     assert rel == "backtest/holdout.py", rel
+                if name == "run" and any(k.arg == "forward_from" for k in n.keywords):
+                    assert rel == "forward_report.py", rel
+                if name == "load_with_forward":
+                    assert rel == "cli.py", rel
