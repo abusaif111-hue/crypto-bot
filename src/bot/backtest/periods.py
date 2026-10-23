@@ -28,6 +28,25 @@ class HoldoutLocked(PermissionError):
     pass
 
 
+_TICKET_KEY = object()          # only bot.backtest.holdout.open_holdout uses it (enforced by tests)
+
+
+class HoldoutTicket:
+    """Proof that Sultan opened the holdout with `bot backtest holdout` (typed confirmation,
+    recorded in the holdout log). Without one, no code can load or replay a holdout candle."""
+    __slots__ = ("operator", "opened_at", "previous_runs")
+
+    def __init__(self, operator: str, opened_at: str, previous_runs: list[str], key: object):
+        if key is not _TICKET_KEY:
+            raise HoldoutLocked("a holdout ticket can only come from bot backtest holdout")
+        self.operator, self.opened_at, self.previous_runs = operator, opened_at, previous_runs
+
+    @property
+    def void(self) -> bool:
+        """True when the holdout was already used before this run."""
+        return bool(self.previous_runs)
+
+
 def research_only(candles: list) -> list:
     """Candles that finished before the holdout starts. A candle that straddles the
     boundary is dropped too, so no holdout price can leak in."""

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from bot.backtest.periods import HOLDOUT_END_MS, WARMUP_START_MS, research_only
+from bot.backtest.periods import HOLDOUT_END_MS, WARMUP_START_MS, HoldoutLocked, HoldoutTicket, research_only
 from bot.core.money import D
 from bot.exchange.filters import SymbolRules, parse_symbol
 from bot.exchange.interface import Candle, SpotReadVenue
@@ -157,6 +157,30 @@ def load(data_dir: Path, symbol: str, interval: str = "4h") -> list[Candle]:
     if not result.ok:
         raise DataError(f"{path} is damaged: " + "; ".join(result.problems[:10]))
     return research_only(candles)
+
+
+def covers(data_dir: Path, symbol: str, interval: str, until_ms: int) -> bool:
+    """Whether the cached file reaches `until_ms`. Reads only the last candle's close time, no prices,
+    so the holdout can be checked for completeness before it is opened."""
+    path = _csv_path(Path(data_dir), symbol, interval)
+    if not path.exists():
+        return False
+    lines = path.read_text().strip().splitlines()
+    return len(lines) > 1 and int(lines[-1].split(",")[6]) + 1 >= until_ms
+
+
+def load_through_holdout(data_dir: Path, symbol: str, interval: str, ticket: HoldoutTicket) -> list[Candle]:
+    """Research and holdout candles together (up to 2026-10-01). Only with a holdout ticket."""
+    if not isinstance(ticket, HoldoutTicket):
+        raise HoldoutLocked("the holdout stays locked: no holdout ticket")
+    path = _csv_path(Path(data_dir), symbol, interval)
+    if not path.exists():
+        raise DataError(f"no history for {symbol} {interval} in {data_dir}; run: bot backtest fetch")
+    candles = read_csv(path)
+    result = check_candles(candles, interval)
+    if not result.ok:
+        raise DataError(f"{path} is damaged: " + "; ".join(result.problems[:10]))
+    return [c for c in candles if c.close_time < HOLDOUT_END_MS]
 
 
 def load_rules(data_dir: Path, symbol: str) -> SymbolRules:

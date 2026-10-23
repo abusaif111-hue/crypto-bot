@@ -35,7 +35,7 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-pytest                              # 271 tests, about 55 seconds
+pytest                              # 285 tests, about 70 seconds
 bot check-config
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 --loss-today 150
@@ -188,6 +188,31 @@ nohup bot backtest run --strategy H2 --screened > ~/backtests/run-h2-wide.log 2>
   risk) still cap the total.
 - Backtests only: paper and live trading keep BTC and ETH until Sultan decides otherwise.
 - Survivorship bias: delisted coins cannot be screened.
+
+Result (23 Oct 2026): the screen picked XRP and BNB; H2 on BTC, ETH, XRP and BNB **passed
+the walk-forward part** of the selection rule (121 trades, +1.05 USDT per trade after
+doubled costs).
+
+### Step 3: the holdout (Sultan only, once)
+
+```bash
+bot backtest holdout --strategy H2 --screened --operator Sultan \
+    --confirm "I am running the one-time holdout test"
+```
+
+Rules fixed before any holdout result (approved by Sultan):
+- H2's settings are chosen by the walk-forward method on the 24 months before the holdout
+  (2023-10 to 2025-09, research data only); same coins and correlation groups.
+- The holdout year (2025-10-01 to 2026-10-01) must show positive expectancy per trade after
+  doubled costs, and the 6% drawdown breaker must never trip as deployed.
+- The 100-trade rule and the one-coin / one-month checks use walk-forward and holdout trades
+  together.
+- Before anything is opened, the command checks the confirmation phrase, that the data reaches
+  2026-10-01, that a passing walk-forward report exists for this config and these coins, and
+  free memory; a mistake never uses up the holdout.
+- Every opening is recorded in `~/backtest-data/holdout-log.json`; a second run for the same
+  strategy is marked VOID and cannot qualify. A failure rejects the strategy: no adjusting
+  and re-running.
 
 ## How a trade is sized
 

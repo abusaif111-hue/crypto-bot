@@ -30,7 +30,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from bot.backtest.periods import RESEARCH_START_MS, assert_no_holdout
+from bot.backtest.periods import HOLDOUT_END_MS, RESEARCH_START_MS, HoldoutLocked, HoldoutTicket, assert_no_holdout
 from bot.backtest.replay import CostModel, ReplayMarket
 from bot.core.config import AppConfig
 from bot.exchange.filters import SymbolRules
@@ -74,9 +74,14 @@ class BacktestResult:
 def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, SymbolRules], cfg: AppConfig,
         cost: CostModel = CostModel(), start_ms: int = RESEARCH_START_MS, end_ms: int | None = None,
         starting_quote: Decimal = STARTING_QUOTE, edge: bool = False,
-        corr_groups: dict[str, str] | None = None) -> BacktestResult:
-    for cs in candles.values():
-        assert_no_holdout(cs)
+        corr_groups: dict[str, str] | None = None, holdout: HoldoutTicket | None = None) -> BacktestResult:
+    if holdout is None:
+        for cs in candles.values():
+            assert_no_holdout(cs)
+    elif not isinstance(holdout, HoldoutTicket):
+        raise HoldoutLocked("the holdout stays locked: no holdout ticket")
+    elif any(c.close_time >= HOLDOUT_END_MS for cs in candles.values() for c in cs):
+        raise HoldoutLocked("candles after the holdout end (2026-10-01) are not part of any test")
     interval = strategy.interval
     market = ReplayMarket(candles, rules, cost, interval)
     by_time = {s: {c.open_time: c for c in cs} for s, cs in candles.items()}

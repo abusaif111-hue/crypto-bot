@@ -140,3 +140,24 @@ def test_module4_backtest_uses_the_venue_interface_not_the_adapter():
         assert "bot.exchange.binance" not in imports, f
         assert not (imports & NETWORK), f
         assert not any(m.startswith(("bot.news", "bot.llm", "bot.execution")) for m in imports), f
+
+
+def test_only_the_holdout_command_can_open_the_holdout():
+    """The ticket key, the holdout loader and the engine's holdout option are used in one place each."""
+    for f in SRC.rglob("*.py"):
+        text = f.read_text()
+        rel = f.relative_to(SRC).as_posix()
+        if "_TICKET_KEY" in text:
+            assert rel in ("backtest/periods.py", "backtest/holdout.py"), rel
+        tree = ast.parse(text)
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call):
+                name = n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "")
+                if name == "load_through_holdout":
+                    assert rel == "cli.py", rel
+                if name == "open_holdout":
+                    assert rel == "cli.py", rel
+                if name == "run" and any(k.arg == "holdout" for k in n.keywords):
+                    assert rel == "backtest/holdout.py", rel
+                if name == "run" and any(k.arg is None for k in n.keywords):     # run(**common) carries holdout
+                    assert rel == "backtest/holdout.py", rel
