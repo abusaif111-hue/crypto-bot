@@ -73,7 +73,8 @@ class BacktestResult:
 
 def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, SymbolRules], cfg: AppConfig,
         cost: CostModel = CostModel(), start_ms: int = RESEARCH_START_MS, end_ms: int | None = None,
-        starting_quote: Decimal = STARTING_QUOTE, edge: bool = False) -> BacktestResult:
+        starting_quote: Decimal = STARTING_QUOTE, edge: bool = False,
+        corr_groups: dict[str, str] | None = None) -> BacktestResult:
     for cs in candles.values():
         assert_no_holdout(cs)
     interval = strategy.interval
@@ -89,7 +90,7 @@ def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, S
     market.set_time(times[0])
     sim = SimExchange(cfg, market, clock=market.clock, starting_quote=starting_quote, fee_rate=cost.taker_fee,
                       entry_slippage_pct=cost.entry_slippage_pct, exit_slippage_pct=cost.exit_slippage_pct,
-                      slippage_multiplier=cost.slippage_multiplier)
+                      slippage_multiplier=cost.slippage_multiplier, corr_groups=corr_groups)
     sim.resume(POLICY_OPERATOR, "automatic start of a backtest run")
     result = BacktestResult(name=strategy.name, params=strategy.params(), symbols=symbols, interval=interval,
                             start_ms=times[0], end_ms=times[-1] + market.interval_ms,

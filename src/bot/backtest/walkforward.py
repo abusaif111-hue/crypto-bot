@@ -110,10 +110,11 @@ def metrics_of(res: BacktestResult) -> Metrics:
     return compute(res.equity, res.starting_equity, res.start_ms, res.trades, res.fills)
 
 
-def choose(strategy: Strategy, candles, rules, cfg, cost, w: Window) -> tuple[Strategy, Decimal | None]:
+def choose(strategy: Strategy, candles, rules, cfg, cost, w: Window,
+           corr_groups: dict[str, str] | None = None) -> tuple[Strategy, Decimal | None]:
     best, best_score = strategy, None
     for v in variants(strategy):
-        s = score(metrics_of(run(v, candles, rules, cfg, cost, w.train_start, w.train_end, edge=True)))
+        s = score(metrics_of(run(v, candles, rules, cfg, cost, w.train_start, w.train_end, edge=True, corr_groups=corr_groups)))
         if s is not None and (best_score is None or s > best_score):
             best, best_score = v, s
     return best, best_score
@@ -121,14 +122,14 @@ def choose(strategy: Strategy, candles, rules, cfg, cost, w: Window) -> tuple[St
 
 def walk_forward(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, SymbolRules],
                  cfg: AppConfig, cost: CostModel = CostModel(), progress=None,
-                 ws: list[Window] | None = None) -> list[WindowResult]:
+                 ws: list[Window] | None = None, corr_groups: dict[str, str] | None = None) -> list[WindowResult]:
     out = []
     ws = windows() if ws is None else ws
     for i, w in enumerate(ws):
-        chosen, sc = choose(strategy, candles, rules, cfg, cost, w)
-        dep = run(chosen, candles, rules, cfg, cost, w.test_start, w.test_end, edge=False)
-        edg = run(chosen, candles, rules, cfg, cost, w.test_start, w.test_end, edge=True)
-        dbl = run(chosen, candles, rules, cfg, cost.doubled(), w.test_start, w.test_end, edge=True)
+        chosen, sc = choose(strategy, candles, rules, cfg, cost, w, corr_groups)
+        dep = run(chosen, candles, rules, cfg, cost, w.test_start, w.test_end, edge=False, corr_groups=corr_groups)
+        edg = run(chosen, candles, rules, cfg, cost, w.test_start, w.test_end, edge=True, corr_groups=corr_groups)
+        dbl = run(chosen, candles, rules, cfg, cost.doubled(), w.test_start, w.test_end, edge=True, corr_groups=corr_groups)
         out.append(WindowResult(w, chosen.params(), sc, dep, edg, dbl,
                                 {"deployed": metrics_of(dep), "edge": metrics_of(edg), "edge_doubled": metrics_of(dbl)}))
         if progress:

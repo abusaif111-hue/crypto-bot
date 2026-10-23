@@ -4,7 +4,7 @@
     bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 [--symbol BTCUSDT]
     bot check-binance [--public-only] [--details]
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
-    bot backtest fetch | baselines | run                  (history, baselines, strategies H1-H3)
+    bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3)
 
 `try-trade` runs a proposed trade through the real risk engine with example
 market data and prints the decision in plain language. It sends nothing to Binance.
@@ -280,8 +280,16 @@ def _backtest_fetch(args: argparse.Namespace, make_exchange=None) -> int:
     cfg = load_config(args.config)
     venue = (make_exchange or BinanceReadOnly)(environment="live")
     data_dir = Path(os.path.expanduser(args.data_dir))
+    symbols = args.symbols or cfg.universe
+    if getattr(args, "screened", False):
+        from bot.backtest import universe
+        try:
+            symbols = universe.load_universe(data_dir)["symbols"]
+        except history.DataError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 2
     ok = True
-    for symbol in args.symbols or cfg.universe:
+    for symbol in symbols:
         try:
             res = history.fetch(venue, data_dir, symbol, args.interval)
             print(f"{symbol} {args.interval}: {history.describe(res, args.interval)}")
@@ -300,6 +308,43 @@ def _backtest_fetch(args: argparse.Namespace, make_exchange=None) -> int:
             print(f"{symbol} {args.interval}: FAILED: {e}", file=sys.stderr)
     print(f"Saved in {data_dir}. The holdout (from 2025-10-01) is stored but stays locked.")
     return 0 if ok else 4
+
+
+def _backtest_screen(args: argparse.Namespace, make_exchange=None, out=None) -> int:
+    """Screen Binance USDT pairs for the wider H2 re-test (rules fixed in bot.backtest.universe)."""
+    from bot.backtest import universe
+    from bot.exchange.binance import BinanceReadOnly
+
+    cfg = load_config(args.config)
+    out = out or sys.stdout
+    venue = (make_exchange or BinanceReadOnly)(environment="live")
+    data_dir = Path(os.path.expanduser(args.data_dir))
+
+    def say(msg):
+        out.write(f"  {time.strftime('%H:%M:%S', time.gmtime())} {msg}\n")
+        out.flush()
+
+    try:
+        res = universe.screen(venue, data_dir, cfg, progress=say)
+    except Exception as e:
+        print(f"Error: screen failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 4
+    text = universe.render(res)
+    (data_dir / "screen" / "screen.md").write_text(text)
+    out.write("\n" + text + f"\nSaved in {data_dir / 'screen'}. Next: bot backtest fetch --screened\n")
+    return 0
+
+
+def _research_setup(args: argparse.Namespace, cfg):
+    """(config, symbols, correlation groups, description) for a backtest; --screened uses the screen result."""
+    from bot.backtest import universe
+
+    if not getattr(args, "screened", False):
+        return cfg, list(cfg.universe), None, None
+    u = universe.load_universe(Path(os.path.expanduser(args.data_dir)))
+    wide = type(cfg).model_validate({**cfg.model_dump(), "universe": u["symbols"]})
+    desc = "; ".join(f"{s} ({u['groups'].get(s, 'majors')})" for s in u["symbols"])
+    return wide, list(u["symbols"]), u["groups"], desc
 
 
 def _backtest_baselines(args: argparse.Namespace, out=None) -> int:
@@ -344,12 +389,12 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
     """Walk-forward and robustness tests of H1-H3 on the research period. The holdout stays locked."""
     from bot.backtest import history, report, selection
 
-    cfg = load_config(args.config)
     data_dir = Path(os.path.expanduser(args.data_dir))
     out = out or sys.stdout
     try:
-        candles = {s: history.load(data_dir, s, args.interval) for s in cfg.universe}
-        rules = {s: history.load_rules(data_dir, s) for s in cfg.universe}
+        cfg, symbols, corr_groups, desc = _research_setup(args, load_config(args.config))
+        candles = {s: history.load(data_dir, s, args.interval) for s in symbols}
+        rules = {s: history.load_rules(data_dir, s) for s in symbols}
     except history.DataError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
@@ -360,11 +405,13 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
 
     cost = report.CostModel()
     meta = report.provenance(cfg, candles, cost)
+    if desc:
+        meta["universe"] = desc
     verdicts = []
     for name in args.strategy:
         say(f"{name}: starting (27 setting combinations x 8 windows, then robustness checks)")
-        ev = selection.evaluate(_make_strategy(name, list(cfg.universe)), candles, rules, cfg, cost,
-                                random_runs=args.random_runs, progress=say)
+        ev = selection.evaluate(_make_strategy(name, symbols), candles, rules, cfg, cost,
+                                random_runs=args.random_runs, progress=say, corr_groups=corr_groups)
         text = selection.render(ev, meta, cfg)
         folder = report.write_files(Path(os.path.expanduser(args.reports_dir)), f"strategy-{name}", text,
                                     {"meta": meta, **selection.summary(ev)})
@@ -414,8 +461,10 @@ def main(argv: list[str] | None = None) -> int:
         q.add_argument("--state-dir", default=DEFAULT_PAPER_DIR, help="where the paper account is kept")
     bp = sub.add_parser("backtest", help="price history and backtests (research period only; holdout locked)")
     bsub = bp.add_subparsers(dest="backtest_cmd", required=True)
+    bsub.add_parser("screen", help="screen Binance USDT pairs for the wider H2 re-test (fixed rules)")
     bf = bsub.add_parser("fetch", help="download price history through the read-only adapter")
     bf.add_argument("--symbols", nargs="*", default=None, help="default: the config universe")
+    bf.add_argument("--screened", action="store_true", help="the coins picked by bot backtest screen")
     bb = bsub.add_parser("baselines", help="cash, buy-and-hold, 50/50 and random entries on the research period")
     bb.add_argument("--seeds", type=int, default=200, help="number of random-entry runs")
     bb.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
@@ -423,13 +472,15 @@ def main(argv: list[str] | None = None) -> int:
     br.add_argument("--strategy", nargs="+", choices=STRATEGIES, default=list(STRATEGIES))
     br.add_argument("--random-runs", type=int, default=50, help="random-entry runs with the same exits")
     br.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
+    br.add_argument("--screened", action="store_true",
+                    help="use the coins and correlation groups picked by bot backtest screen")
     for q in bsub.choices.values():
         q.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
         q.add_argument("--interval", default="4h", choices=["4h"])
     args = p.parse_args(argv)
     try:
         if args.cmd == "backtest":
-            return {"fetch": _backtest_fetch, "baselines": _backtest_baselines,
+            return {"screen": _backtest_screen, "fetch": _backtest_fetch, "baselines": _backtest_baselines,
                     "run": _backtest_run}[args.backtest_cmd](args)
         if args.cmd == "paper":
             return {"run": _paper_run, "status": _paper_status, "resume": _paper_request("resume"),

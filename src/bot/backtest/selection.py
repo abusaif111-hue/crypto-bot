@@ -82,9 +82,9 @@ def _expectancy(trades: list[ClosedTrade]) -> Decimal | None:
 
 def evaluate(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, SymbolRules], cfg: AppConfig,
              cost: CostModel = CostModel(), random_runs: int = 50, progress=None,
-             ws: list[Window] | None = None) -> StrategyEvaluation:
+             ws: list[Window] | None = None, corr_groups: dict[str, str] | None = None) -> StrategyEvaluation:
     say = progress or (lambda msg: None)
-    wf = walk_forward(strategy, candles, rules, cfg, cost, progress=say, ws=ws)
+    wf = walk_forward(strategy, candles, rules, cfg, cost, progress=say, ws=ws, corr_groups=corr_groups)
     oos = [t for r in wf for t in r.edge.trades]
     oos_dbl = [t for r in wf for t in r.edge_doubled.trades]
     by_coin, by_month = defaultdict(lambda: ZERO), defaultdict(lambda: ZERO)
@@ -93,20 +93,20 @@ def evaluate(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[s
         by_month[datetime.fromtimestamp(t.closed_at, timezone.utc).strftime("%Y-%m")] += t.pnl
 
     say(f"{strategy.name}: full research period, robustness and per-coin runs")
-    full_edge_res = run(strategy, candles, rules, cfg, cost, RESEARCH_START_MS, edge=True)
-    full_dep_res = run(strategy, candles, rules, cfg, cost, RESEARCH_START_MS, edge=False)
-    sensitivity = [(label, metrics_of(run(v, candles, rules, cfg, cost, RESEARCH_START_MS, edge=True)))
+    full_edge_res = run(strategy, candles, rules, cfg, cost, RESEARCH_START_MS, edge=True, corr_groups=corr_groups)
+    full_dep_res = run(strategy, candles, rules, cfg, cost, RESEARCH_START_MS, edge=False, corr_groups=corr_groups)
+    sensitivity = [(label, metrics_of(run(v, candles, rules, cfg, cost, RESEARCH_START_MS, edge=True, corr_groups=corr_groups)))
                    for label, v in one_at_a_time(strategy)]
     per_coin = {}
     for s in candles:
         solo = _with_symbols(strategy, [s])
-        per_coin[s] = metrics_of(run(solo, {s: candles[s]}, {s: rules[s]}, cfg, cost, RESEARCH_START_MS, edge=True))
+        per_coin[s] = metrics_of(run(solo, {s: candles[s]}, {s: rules[s]}, cfg, cost, RESEARCH_START_MS, edge=True, corr_groups=corr_groups))
 
     say(f"{strategy.name}: {random_runs} random-entry runs with the same exits")
     rand = []
     for seed in range(random_runs):
         r = run(RandomEntry(sorted(candles), seed=seed, exits=strategy), candles, rules, cfg, cost,
-                RESEARCH_START_MS, edge=True)
+                RESEARCH_START_MS, edge=True, corr_groups=corr_groups)
         e = _expectancy(r.trades)
         if e is not None:
             rand.append(e)
@@ -224,7 +224,8 @@ def render(ev: StrategyEvaluation, meta: dict[str, Any], cfg: AppConfig) -> str:
          f"Research period {meta['research_period'][0]} to {meta['research_period'][1]}; holdout {meta['holdout']}. "
          f"Generated {meta['generated_at']}, commit {meta['git_commit'][:10]}"
          f"{' (with uncommitted changes)' if meta['uncommitted_changes'] else ''}. "
-         f"Default settings: {', '.join(f'{k}={v}' for k, v in ev.default_params.items())}.", "",
+         f"Default settings: {', '.join(f'{k}={v}' for k, v in ev.default_params.items())}."
+         + (f" Coins (correlation group): {meta['universe']}." if meta.get("universe") else ""), "",
          "## Selection rule", "", "| Check | Result | Detail |", "| --- | --- | --- |"]
     L += [f"| {c.name} | {'pass' if c.passed else 'FAIL'} | {c.detail} |" for c in ev.checks]
     L += ["| Holdout (2025-10 to 2026-10) | pending | step 3, run only by Sultan |", "",

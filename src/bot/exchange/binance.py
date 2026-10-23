@@ -184,6 +184,17 @@ class BinanceReadOnly:
             raise ExchangeError(f"Binance returned no rules for {sorted(missing)}")
         return out
 
+    def all_symbol_rules(self) -> list[SymbolRules]:
+        """Every symbol Binance lists, in one public exchangeInfo call (request weight 20).
+        Symbols whose filters cannot be parsed are left out."""
+        out = []
+        for s in self._get("/api/v3/exchangeInfo")["symbols"]:
+            try:
+                out.append(parse_symbol(s))
+            except ValueError:
+                pass
+        return out
+
     def books(self, symbols: list[str]) -> dict[str, Book]:
         data = self._get("/api/v3/ticker/bookTicker", {"symbols": json.dumps(symbols, separators=(",", ":"))})
         return {d["symbol"]: Book(D(d["bidPrice"]), D(d["askPrice"])) for d in data}

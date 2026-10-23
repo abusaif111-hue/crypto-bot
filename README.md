@@ -35,7 +35,7 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-pytest                              # 245 tests, about 45 seconds
+pytest                              # 271 tests, about 55 seconds
 bot check-config
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000
 bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 --loss-today 150
@@ -163,6 +163,29 @@ tail -f ~/backtests/run.log                             # watch progress (Ctrl+C
   sideways, high volatility; rules fixed before testing).
 - The paper runner does not yet apply a strategy's own exits (trailing stop, exit signals);
   that is added if a strategy passes, before it paper trades.
+
+### Re-testing H2 on more coins (approved by Sultan)
+
+First results (Oct 2026): none of H1-H3 qualified on BTC and ETH. H2 failed only the
+100-trade check (70 trades). H2 is re-tested **unchanged** on a wider universe chosen by
+rules fixed before any new coin was looked at (`src/bot/backtest/universe.py`):
+
+```bash
+bot backtest screen                 # checks every Binance USDT pair; writes ~/backtest-data/screen/
+bot backtest fetch --screened       # 4h history of the picked coins
+nohup bot backtest run --strategy H2 --screened > ~/backtests/run-h2-wide.log 2>&1 &
+```
+
+- **Candidates:** USDT spot pairs trading today with daily candles since 2019-10-01 or
+  earlier ("no new listings", D-16); no stablecoins, fiat, gold, wrapped or leveraged tokens.
+- **Screen**, over 2022-10-01 to 2025-10-01 (before the holdout, never touching it):
+  30-day volatility above 2x BTC's on at most 25% of days; worst fall at most 70%; at least
+  20 million USDT traded on 95% of days. Up to 8 passing coins with the most volume (D-16).
+- **Correlation groups (R-08 as written):** correlation with BTC 0.8 or more joins BTC/ETH in
+  "majors"; below that a coin gets its own group. R-04 (3 positions) and R-05 (1.5% open
+  risk) still cap the total.
+- Backtests only: paper and live trading keep BTC and ETH until Sultan decides otherwise.
+- Survivorship bias: delisted coins cannot be screened.
 
 ## How a trade is sized
 

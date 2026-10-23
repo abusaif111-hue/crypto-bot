@@ -243,3 +243,11 @@ def test_avg_price_is_a_public_read():
     assert ex.avg_price("BTCUSDT") == Dec("82010.11")
     assert client.calls[-1] == ("/api/v3/avgPrice", False, {"symbol": "BTCUSDT"})
     assert READ_ENDPOINTS["/api/v3/avgPrice"] is False
+
+
+def test_all_symbol_rules_is_one_public_read():
+    client = FakeClient(PUBLIC)
+    ex = BinanceReadOnly(public_client=client, _sleep=lambda s: None)
+    rules = ex.all_symbol_rules()
+    assert {r.symbol for r in rules} >= {"BTCUSDT", "ETHUSDT"}
+    assert client.calls == [("/api/v3/exchangeInfo", False, {})]
