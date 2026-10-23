@@ -24,6 +24,9 @@ HOLDOUT_START_MS = _ms(2025, 10, 1)
 HOLDOUT_END_MS = _ms(2026, 10, 1)
 
 
+HOLDOUT_SPENT = "used by H2 on 2026-10-23"   # every later holdout run is VOID (bot.backtest.holdout)
+
+
 class HoldoutLocked(PermissionError):
     pass
 

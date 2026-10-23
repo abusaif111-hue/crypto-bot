@@ -11,8 +11,9 @@ Also required (design package, "Robustness" and "Baselines"):
 6. no setting moved by 20% makes the result collapse (expectancy turns negative or
    falls below half);
 7. the strategy beats random entries with the same exits (above their 95th percentile).
-The holdout part is step 3 and is run only by Sultan; until then the verdict is
-at most "passes walk-forward, holdout pending". The best return is never a criterion.
+The holdout was step 3 and is spent (H2 used it), so the verdict is at most "passes
+walk-forward"; the next test is a forward test on new prices, if Sultan approves one
+(docs/h2b-plan.md). The best return is never a criterion.
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ from bot.analysis.indicators import percentile, realized_vol, sma
 from bot.analysis.resample import DAY_MS, daily
 from bot.backtest.engine import run
 from bot.backtest.metrics import Metrics
-from bot.backtest.periods import RESEARCH_START_MS
+from bot.backtest.periods import HOLDOUT_SPENT, RESEARCH_START_MS
 from bot.backtest.replay import CostModel
 from bot.backtest.walkforward import Window, WindowResult, metrics_of, one_at_a_time, walk_forward
 from bot.core.config import AppConfig
@@ -216,7 +217,8 @@ def _pc(x: Decimal | None) -> str:
 
 
 def render(ev: StrategyEvaluation, meta: dict[str, Any], cfg: AppConfig) -> str:
-    verdict = ("PASSES the walk-forward part of the selection rule. Next: the holdout test, run only by Sultan."
+    verdict = ("PASSES the walk-forward part of the selection rule. The holdout is spent "
+               f"({HOLDOUT_SPENT}), so the next test is a forward test on new prices, if Sultan approves one."
                if ev.passes_walk_forward else
                "DOES NOT QUALIFY for paper trading on walk-forward. It stays out of the bot.")
     L = [f"# {ev.name} backtest", "",
@@ -228,7 +230,7 @@ def render(ev: StrategyEvaluation, meta: dict[str, Any], cfg: AppConfig) -> str:
          + (f" Coins (correlation group): {meta['universe']}." if meta.get("universe") else ""), "",
          "## Selection rule", "", "| Check | Result | Detail |", "| --- | --- | --- |"]
     L += [f"| {c.name} | {'pass' if c.passed else 'FAIL'} | {c.detail} |" for c in ev.checks]
-    L += ["| Holdout (2025-10 to 2026-10) | pending | step 3, run only by Sultan |", "",
+    L += [f"| Holdout (2025-10 to 2026-10) | spent | {HOLDOUT_SPENT}; it cannot judge any strategy again |", "",
           "## Walk-forward test windows (unseen data, settings chosen on the 24 months before)", "",
           "| Test window | Settings chosen | Trades | Net P&L | Expectancy | Max drawdown (as deployed) | Breaker | "
           "Expectancy, doubled costs |", "| --- | --- | --- | --- | --- | --- | --- | --- |"]

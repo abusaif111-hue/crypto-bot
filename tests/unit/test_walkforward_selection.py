@@ -182,11 +182,17 @@ def test_fewer_than_100_trades_fails(evaluation):
     assert c.passed == (evaluation.oos_trades >= 100)
 
 
-def test_report_renders_with_verdict_and_holdout_pending(evaluation):
+def test_report_renders_with_verdict_and_the_spent_holdout(evaluation):
+    from dataclasses import replace
+
     from bot.backtest import report
     meta = report.provenance(AppConfig(), short_data(), report.CostModel())
     text = selection.render(evaluation, meta, AppConfig())
-    for must in ("Verdict:", "Selection rule", "Holdout (2025-10 to 2026-10) | pending", "Walk-forward test windows",
+    passing = replace(evaluation, checks=[replace(c, passed=True) for c in evaluation.checks])
+    passed = selection.render(passing, meta, AppConfig())
+    assert "a forward test on new prices" in passed and "holdout test" not in passed   # H2 used the holdout
+    for must in ("Verdict:", "Selection rule", "Holdout (2025-10 to 2026-10) | spent | used by H2 on 2026-10-23",
+                 "Walk-forward test windows",
                  "Robustness", "Per coin", "By market regime", "Random entries with the same exits",
                  "Limits of simulation", "no such reset"):
         assert must in text, must
