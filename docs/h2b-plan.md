@@ -1,8 +1,7 @@
 # H2b plan: blended momentum with a volatility pause
 
-Status: **DRAFT, waiting for Sultan's approval.** Nothing in this plan is built or run yet.
-Once Sultan approves it, this file is frozen: the approving commit is the record of what
-was decided before any H2b result existed. Changing anything below after that, including
+Status: **APPROVED by Sultan on 23 Oct 2026 (all four decisions in section 6). Frozen.**
+The approving commit is the record of what was decided before any H2b result existed. Changing anything below after that, including
 a setting, a coin, a date or a pass rule, makes it a new strategy with a new forward test.
 
 ## 1. Where H2 stands
@@ -172,9 +171,9 @@ Steps B and C run on the server; results come only from those runs.
 
 ## 6. Sultan's decisions
 
-- [ ] Approve H2b as defined in section 2 (rules, settings, coins).
-- [ ] Approve the test plan and pass rules in section 3.
-- [ ] Approve a forward-test mode for a strategy that has not passed the full selection rule.
+- [x] Approve H2b as defined in section 2 (rules, settings, coins).
+- [x] Approve the test plan and pass rules in section 3.
+- [x] Approve a forward-test mode for a strategy that has not passed the full selection rule.
       The design package allows paper trading only for strategies that passed; this is a
       separate, labelled exception with simulated money only.
-- [ ] Approve tightening the holdout lock (section 5, item 2).
+- [x] Approve tightening the holdout lock (section 5, item 2).
