@@ -5,6 +5,7 @@
     bot check-binance [--public-only] [--details]
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3)
+    bot backtest holdout                                  (the one-time holdout test; Sultan only)
 
 `try-trade` runs a proposed trade through the real risk engine with example
 market data and prints the decision in plain language. It sends nothing to Binance.
@@ -429,6 +430,63 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
     return 0
 
 
+def _backtest_holdout(args: argparse.Namespace, out=None) -> int:
+    """The one-time holdout test. Every check that could stop it runs BEFORE the holdout is opened,
+    so a mistake (wrong phrase, missing data, no passing walk-forward) never uses it up."""
+    from bot.backtest import history, holdout, report
+    from bot.backtest.periods import HOLDOUT_END_MS, HoldoutLocked
+    from bot.backtest.universe import available_memory_mb, memory_needed_mb
+
+    out = out or sys.stdout
+    data_dir = Path(os.path.expanduser(args.data_dir))
+    reports_dir = Path(os.path.expanduser(args.reports_dir))
+    try:
+        if args.confirm != holdout.CONFIRM_PHRASE:
+            raise HoldoutLocked(f'type --confirm "{holdout.CONFIRM_PHRASE}" exactly to open the holdout')
+        if not args.operator.strip():
+            raise HoldoutLocked("give your name with --operator")
+        cfg, symbols, corr_groups, desc = _research_setup(args, load_config(args.config))
+        missing = [s for s in symbols if not history.covers(data_dir, s, args.interval, HOLDOUT_END_MS)]
+        if missing:
+            raise history.DataError(f"history does not reach 2026-10-01 for {', '.join(missing)}; "
+                                    f"run: bot backtest fetch{' --screened' if args.screened else ''}")
+        research = {s: history.load(data_dir, s, args.interval) for s in symbols}
+        rules = {s: history.load_rules(data_dir, s) for s in symbols}
+        meta = report.provenance(cfg, research, report.CostModel())
+        if desc:
+            meta["universe"] = desc
+        wf_folder, wf = holdout.find_walk_forward(reports_dir, args.strategy, meta["config_sha256"], desc)
+        need, free = memory_needed_mb(len(symbols)), available_memory_mb()
+        if free is not None and free < need + 30:
+            raise HoldoutLocked(f"this run needs about {need} MB of memory plus a margin and only {free} MB is "
+                                f"free; the holdout was NOT opened")
+    except (HoldoutLocked, history.DataError) as e:
+        print(f"Error: {e}\nThe holdout was not opened.", file=sys.stderr)
+        return 2
+
+    ticket = holdout.open_holdout(data_dir, args.strategy, args.operator, args.confirm)
+    out.write(f"Holdout opened by {args.operator} at {ticket.opened_at} and recorded in "
+              f"{data_dir / holdout.LOG_FILE}.\n")
+    if ticket.void:
+        out.write(f"WARNING: the holdout was already used for {args.strategy} ({', '.join(ticket.previous_runs)}). "
+                  f"This run is VOID and cannot qualify anything.\n")
+    meta["holdout"] = f"opened by {args.operator} at {ticket.opened_at}"
+
+    def say(msg):
+        out.write(f"  {time.strftime('%H:%M:%S', time.gmtime())} {msg}\n")
+        out.flush()
+
+    through = {s: history.load_through_holdout(data_dir, s, args.interval, ticket) for s in symbols}
+    ev = holdout.evaluate(_make_strategy(args.strategy, symbols), research, through, rules, cfg, wf_folder, wf,
+                          ticket, corr_groups=corr_groups, progress=say)
+    text = holdout.render(ev, meta, args.operator)
+    folder = report.write_files(reports_dir, f"holdout-{args.strategy}", text,
+                                {"meta": meta, **holdout.summary(ev, args.operator)})
+    holdout.finish(data_dir, args.strategy, ticket, holdout.verdict(ev), str(folder))
+    out.write("\n" + text + f"\nReport saved in {folder}\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="bot")
     p.add_argument("--config", default="config/default.yaml")
@@ -480,6 +538,12 @@ def main(argv: list[str] | None = None) -> int:
     br.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     br.add_argument("--screened", action="store_true",
                     help="use the coins and correlation groups picked by bot backtest screen")
+    bh = bsub.add_parser("holdout", help="the one-time holdout test (Sultan only; recorded; a second run is VOID)")
+    bh.add_argument("--strategy", required=True, choices=STRATEGIES)
+    bh.add_argument("--operator", required=True)
+    bh.add_argument("--confirm", required=True, help="the exact confirmation phrase")
+    bh.add_argument("--screened", action="store_true", help="the coins and groups picked by bot backtest screen")
+    bh.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     for q in bsub.choices.values():
         q.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
         q.add_argument("--interval", default="4h", choices=["4h"])
@@ -487,7 +551,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "backtest":
             return {"screen": _backtest_screen, "fetch": _backtest_fetch, "baselines": _backtest_baselines,
-                    "run": _backtest_run}[args.backtest_cmd](args)
+                    "run": _backtest_run, "holdout": _backtest_holdout}[args.backtest_cmd](args)
         if args.cmd == "paper":
             return {"run": _paper_run, "status": _paper_status, "resume": _paper_request("resume"),
                     "block": _paper_request("block"), "trade": _paper_request("trade")}[args.paper_cmd](args)
