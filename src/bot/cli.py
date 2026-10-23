@@ -3,6 +3,7 @@
     bot check-config [--config config/default.yaml]
     bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 [--symbol BTCUSDT]
     bot check-binance [--public-only] [--details]
+    bot check-trading [--symbol BTCUSDT]                  (testnet trading key and a test order; places nothing)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
     bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b)
@@ -147,6 +148,60 @@ def _check_binance(args: argparse.Namespace, make_exchange=None, load_creds=None
 
     print("Result: " + ("ALL CHECKS PASSED. Read-only; no orders can be sent." if ok else "SOME CHECKS FAILED (see PROBLEM above)."))
     return 0 if ok else 4
+
+
+def _check_trading(args: argparse.Namespace, make_trader=None, make_reader=None, load_creds=None) -> int:
+    """Testnet trading key check (module 5a): account, permissions, clock and a TEST order
+    (Binance validates it without trading). No order is placed.
+    Exit codes: 0 passed, 2 setup problem, 3 unsafe key, 4 Binance error or refused test order."""
+    from bot.core.ids import client_order_id, new_intent_id
+    from bot.core.money import D, floor_price, floor_to_step
+    from bot.exchange.binance import BinanceReadOnly, ExchangeError
+    from bot.exchange.credentials import CredentialsError, load_credentials
+    from bot.exchange.trading import BinanceTrader, OrderRejected, OrderRequest, check_trading_account
+
+    load_creds = load_creds or (lambda: load_credentials(prefix="BINANCE_TESTNET"))
+    print("Binance TESTNET trading check (testnet.binance.vision; fake money; no order is placed)")
+    try:
+        creds = load_creds()
+    except CredentialsError as e:
+        print(f"  Testnet key .... NOT READY: {e}")
+        return 2
+    try:
+        trader = (make_trader or BinanceTrader)(environment="testnet", credentials=creds)
+        reader = (make_reader or BinanceReadOnly)(environment="testnet")
+        skew = reader.clock_skew_ms()
+        print(f"  Clock .......... {'OK' if abs(skew) <= 500 else 'PROBLEM'}: {skew:+d} ms vs the testnet")
+        info = trader.account()
+        check = check_trading_account(info, "testnet")
+        if not check.safe:
+            print("  Testnet key .... STOP:")
+            for p in check.problems:
+                print(f"                   - {p}")
+            return 3
+        print(f"  Testnet key .... OK: trading enabled, account {info.account_type}")
+        for n in check.notes:
+            print(f"  Note ........... {n}")
+        usdt = next((b.total for b in info.balances if b.asset == "USDT"), D(0))
+        print(f"  Balances ....... {len(info.balances)} assets, {usdt:,.2f} USDT (testnet, not real)")
+        rules = reader.symbol_rules([args.symbol])[args.symbol]
+        bid = reader.books([args.symbol])[args.symbol].bid
+        price = floor_price(bid * D("0.9"), rules.tick_size)               # far below the market: test only
+        qty = floor_to_step(max(rules.min_notional, D(5)) * 2 / price, rules.step_size)
+        req = OrderRequest(args.symbol, "BUY", "LIMIT", qty, client_order_id(new_intent_id(), "entry"),
+                           price=price, time_in_force="GTC")
+        trader.test_order(req, rules)
+        print(f"  Test order ..... OK: Binance accepted a test LIMIT BUY {qty.normalize()} {args.symbol} at "
+              f"{price.normalize()} (validated only, not placed)")
+        print(f"  Open orders .... {len(trader.open_orders(args.symbol))} on {args.symbol}")
+    except OrderRejected as e:
+        print(f"  Test order ..... REFUSED: {e}")
+        return 4
+    except ExchangeError as e:
+        print(f"  Binance ........ ERROR: {e}")
+        return 4
+    print("Result: TESTNET TRADING KEY WORKS. Nothing was bought or sold.")
+    return 0
 
 
 DEFAULT_PAPER_DIR = "~/paper"
@@ -731,6 +786,8 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("check-binance", help="read-only connection check: key permissions, prices, rules, balances")
     c.add_argument("--public-only", action="store_true", help="skip everything that needs the API key")
     c.add_argument("--details", action="store_true", help="list each balance instead of the total only")
+    ct = sub.add_parser("check-trading", help="testnet trading key check and a test order (nothing is placed)")
+    ct.add_argument("--symbol", default="BTCUSDT")
     pp = sub.add_parser("paper", help="paper trading on live prices with simulated money")
     psub = pp.add_subparsers(dest="paper_cmd", required=True)
     pr = psub.add_parser("run", help="run paper trading until stopped (used by the bot-paper service)")
@@ -809,7 +866,7 @@ def main(argv: list[str] | None = None) -> int:
             return {"run": _paper_run, "status": _paper_status, "resume": _paper_request("resume"),
                     "block": _paper_request("block"), "trade": _paper_request("trade")}[args.paper_cmd](args)
         return {"check-config": _check_config, "try-trade": _try_trade,
-                "check-binance": _check_binance}[args.cmd](args)
+                "check-binance": _check_binance, "check-trading": _check_trading}[args.cmd](args)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2

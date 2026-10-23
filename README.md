@@ -285,6 +285,36 @@ systemctl stop bot-paper               # memory for the replays; start it again 
 forward report --operator Sultan
 ```
 
+## Order execution on the testnet (module 5, in progress)
+
+Real orders are built step by step on Binance's **Spot testnet** (testnet.binance.vision, fake
+money). Step 5a is the trading adapter (`bot.exchange.trading`), separate from the read-only
+adapter, which stays read-only:
+
+- It may call only 7 endpoints (place, test, query and cancel an order; open orders; account;
+  own trades), and refuses any environment but the testnet.
+- **Never two orders for one idea.** Binance accepts a repeated client order ID once the first
+  order has filled, so a blind retry could buy twice. When an order's outcome is unknown
+  (timeout, network error, Binance's "execution status unknown"), the adapter never re-sends it:
+  it looks the order up by its ID, and if Binance still cannot say, it reports "outcome unknown"
+  so new entries stay blocked until reconciliation (step 5c) finds it.
+- Orders are checked against Binance's rules before sending (price and size steps, minimum
+  order value). An entry is always a limit order with a price cap; a market order is allowed
+  only to sell (an exit).
+- A separate testnet key (`BINANCE_TESTNET_*` in `.env`), never the live read-only key.
+
+Set it up on the server, as the bot user:
+
+```bash
+bash ~/crypto-bot/scripts/make_binance_key.sh --testnet   # create the testnet key, follow the steps
+cd ~/crypto-bot && .venv/bin/bot check-trading            # checks the key and sends a TEST order only
+```
+
+`check-trading` places nothing: Binance validates a test order without trading.
+
+Next: 5b protected entries (stop-loss and take-profit placed with the entry, checked after every
+fill), 5c reconciliation, 5d the testnet runner with the 5-clean-round-trips counter, 5e alerts.
+
 ## How a trade is sized
 
 1. Entry is assumed to fill slightly worse than planned (0.05%), and the stop
@@ -379,6 +409,9 @@ bot; `resume(operator, reason)` allows them.
   more round of fees and slippage; only trades closed by the end count; the replay cannot trade
   before the forward start or in the holdout year; it is refused while the test runs, with the
   runner running, or on incomplete prices; the verdict is written once.
+- Trading adapter (testnet): an order whose outcome is unknown is looked up, never sent twice;
+  bad orders are never sent; only the 7 allow-listed endpoints; testnet only; only the execution
+  code and `check-trading` can reach it; `check-trading` sends a test order only.
 - Candle history longer than Binance's 1,000 per request is fetched page by page, and a failed
   page fails closed.
 
@@ -396,6 +429,7 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
 4. H2b (`docs/h2b-plan.md`): the strategy, paged candle history, the stricter holdout lock,
    strategies in the paper runner and the forward test (start, run, status, end-of-test report) are
    done; H2b passed the walk-forward check (23 Oct 2026); the forward test is Sultan's to start
-5. Order execution with protection checks and reconciliation
+5. Order execution on the testnet: 5a trading adapter done; next protected entries, reconciliation,
+   the testnet runner (5 clean round trips) and alerts
 6. Dashboard and Telegram alerts
 7. News and AI analysis (advisory only)

@@ -1,8 +1,11 @@
 """Deterministic client order IDs.
 
 Every order intent gets a UUID that is stored before anything is sent. The
-Binance client order ID is derived from it, so a resend after a timeout reuses
-the same ID and Binance rejects it as a duplicate instead of placing a second order.
+Binance client order ID is derived from it, so after a timeout the order can be
+looked up by that ID. A resend is NOT safe: Binance rejects a duplicate ID only
+while the first order is still open, and accepts it again once that one has
+filled (Spot API docs, New order). So the trading adapter never re-sends an order
+whose outcome is unknown; it looks the order up instead (bot.exchange.trading).
 """
 from __future__ import annotations
 

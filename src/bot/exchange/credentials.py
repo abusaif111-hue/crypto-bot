@@ -50,8 +50,10 @@ def _check_private(path: Path, what: str) -> None:
         raise CredentialsError(f"{what} {path} can be read by other users; run: chmod 600 {path}")
 
 
-def load_credentials(env_file: Path | None = None, environ: dict[str, str] | None = None) -> Credentials:
-    """Environment variables win over the .env file."""
+def load_credentials(env_file: Path | None = None, environ: dict[str, str] | None = None,
+                     prefix: str = "BINANCE") -> Credentials:
+    """Environment variables win over the .env file. `prefix` picks the key: BINANCE (the live read-only
+    key) or BINANCE_TESTNET (the testnet trading key), so the two can never be mixed up."""
     environ = dict(os.environ if environ is None else environ)
     env_path = Path(environ.get("BOT_ENV_FILE", env_file or REPO_ROOT / ".env"))
     file_values = read_env_file(env_path)
@@ -61,16 +63,17 @@ def load_credentials(env_file: Path | None = None, environ: dict[str, str] | Non
     def get(name: str) -> str:
         return (environ.get(name) or file_values.get(name) or "").strip()
 
-    api_key = get("BINANCE_API_KEY")
-    key_path = get("BINANCE_PRIVATE_KEY_PATH")
+    key_name, path_name = f"{prefix}_API_KEY", f"{prefix}_PRIVATE_KEY_PATH"
+    api_key = get(key_name)
+    key_path = get(path_name)
     if not api_key:
         raise CredentialsError(
-            f"BINANCE_API_KEY is not set (looked in the environment and {env_path}). "
+            f"{key_name} is not set (looked in the environment and {env_path}). "
             "Run scripts/make_binance_key.sh to store it.")
     if not api_key.isalnum() or not 16 <= len(api_key) <= 128:
-        raise CredentialsError("BINANCE_API_KEY does not look like a Binance API key (letters and digits only)")
+        raise CredentialsError(f"{key_name} does not look like a Binance API key (letters and digits only)")
     if not key_path:
-        raise CredentialsError("BINANCE_PRIVATE_KEY_PATH is not set")
+        raise CredentialsError(f"{path_name} is not set")
     pk = Path(key_path).expanduser()
     if not pk.is_file():
         raise CredentialsError(f"private key file not found: {pk}")

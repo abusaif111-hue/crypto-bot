@@ -2,7 +2,8 @@
 # Creates the Binance API key pair ON THE SERVER and stores the API key in .env.
 #
 # Run as the "bot" user:
-#     bash ~/crypto-bot/scripts/make_binance_key.sh
+#     bash ~/crypto-bot/scripts/make_binance_key.sh             # the live READ-ONLY key
+#     bash ~/crypto-bot/scripts/make_binance_key.sh --testnet   # the SPOT TESTNET trading key (fake money)
 #
 # The private key is generated here and never leaves this server. You copy only
 # the PUBLIC key into Binance (API Management > Create API > Self-generated),
@@ -11,8 +12,14 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SECRETS_DIR="${HOME}/.secrets"
-KEY_FILE="${SECRETS_DIR}/binance_ed25519.pem"
 ENV_FILE="${REPO_DIR}/.env"
+if [[ "${1:-}" == "--testnet" ]]; then
+  KEY_FILE="${SECRETS_DIR}/binance_testnet_ed25519.pem"
+  VAR_PREFIX=BINANCE_TESTNET
+else
+  KEY_FILE="${SECRETS_DIR}/binance_ed25519.pem"
+  VAR_PREFIX=BINANCE
+fi
 
 if [[ $EUID -eq 0 ]]; then
   echo "Run this as the bot user, not root:  su - bot" >&2
@@ -38,6 +45,18 @@ It is safe to copy; it cannot be used to trade on its own.
 ------------------------------------------------------------------
 EOF
 openssl pkey -in "$KEY_FILE" -pubout
+if [[ "$VAR_PREFIX" == BINANCE_TESTNET ]]; then
+cat <<'EOF'
+------------------------------------------------------------------
+TESTNET KEY (fake money only; never use it on the real Binance).
+STEP 2. Open https://testnet.binance.vision and log in with GitHub.
+        In its API key section, register a new Ed25519 key and
+        paste the public key above.
+STEP 3. Make sure trading is enabled for this testnet key.
+STEP 4. The testnet then shows an API key. Paste it below.
+------------------------------------------------------------------
+EOF
+else
 cat <<'EOF'
 ------------------------------------------------------------------
 STEP 2. In Binance: API Management > Create API > Self-generated.
@@ -48,6 +67,7 @@ STEP 3. Permissions: ONLY "Enable Reading". Leave trading,
 STEP 4. Binance then shows an API key. Paste it below.
 ------------------------------------------------------------------
 EOF
+fi
 
 read -rsp "API key from Binance (input hidden, press Enter when done): " API_KEY
 echo
@@ -70,9 +90,13 @@ set_var() {  # set_var NAME VALUE: replace the line or append it
   cat "$tmp" > "$ENV_FILE"
   rm -f "$tmp"
 }
-set_var BINANCE_API_KEY "$API_KEY"
-set_var BINANCE_PRIVATE_KEY_PATH "$KEY_FILE"
+set_var "${VAR_PREFIX}_API_KEY" "$API_KEY"
+set_var "${VAR_PREFIX}_PRIVATE_KEY_PATH" "$KEY_FILE"
 unset API_KEY
 
 echo "Saved. $ENV_FILE is readable only by this user and is never uploaded to GitHub."
-echo "Next: run  bot check-binance  to confirm the key is read-only and working."
+if [[ "$VAR_PREFIX" == BINANCE_TESTNET ]]; then
+  echo "Next: run  bot check-trading  to confirm the testnet key works (it places no order)."
+else
+  echo "Next: run  bot check-binance  to confirm the key is read-only and working."
+fi
