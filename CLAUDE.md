@@ -78,7 +78,10 @@ bot paper status
    (steps 1-2 done: data, replay, engine, metrics, baselines; strategies H1-H3, walk-forward, selection rule;
    step 3: holdout, run by Sultan). Backtests have two modes: as deployed (6% breaker halts) and edge
    measurement (breach recorded, peak reset; backtests only). Selection: every walk-forward test window
-   must stay below the 6% breaker as deployed (Sultan's decision).
+   must stay below the 6% breaker as deployed (Sultan's decision). First run: none qualified; H2 failed
+   only the 100-trade check and is re-tested unchanged on more coins (`bot backtest screen`, rules fixed
+   in `bot.backtest.universe` before any data was seen; R-08 groups by measured correlation). Do not
+   change H2, the screen rules or the selection rule to make it pass; the wider universe is backtest-only.
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
 6. Loss-review loop, dashboard (FastAPI, not public), Telegram alerts
 7. News + LLM, advisory/veto only

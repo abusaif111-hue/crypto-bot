@@ -133,6 +133,7 @@ class SimExchange:
     entry_slippage_pct: Decimal | None = None   # None: the risk config's entry allowance
     exit_slippage_pct: Decimal | None = None    # None: the risk config's stop allowance for the symbol
     slippage_multiplier: Decimal = Decimal("1")  # backtests double costs with 2
+    corr_groups: dict[str, str] | None = None     # None: CORR_GROUPS (backtests pass measured groups, R-08)
 
     quote: Decimal = field(init=False)
     created_at: float = field(init=False)
@@ -252,7 +253,7 @@ class SimExchange:
             d = Decision.reject(RejectCode.STALE_DATA, f"market data unavailable: {e}")
             return EntryResult(d, False, reason=d.reason)
         state = self.account_state(now)
-        decision = evaluate(intent, state, snapshot, rules, self.cfg, corr_group(intent.symbol))
+        decision = evaluate(intent, state, snapshot, rules, self.cfg, self._group(intent.symbol))
         if not decision.accepted:
             return EntryResult(decision, False, reason=decision.reason)
         return self._open_position(intent, decision, snapshot, rules, now)
@@ -283,7 +284,7 @@ class SimExchange:
             intent_id=intent_id, symbol=intent.symbol, base_asset=rules.base_asset, strategy=intent.strategy,
             qty=qty, entry_price=price, entry_fee=fee, stop_price=stop, take_profit_price=take_profit,
             planned_risk=decision.planned_risk, opened_at=now, expires_at=now + intent.horizon_hours * 3600,
-            corr_group=corr_group(intent.symbol),
+            corr_group=self._group(intent.symbol),
         )
         self._bids[intent.symbol] = snapshot.best_bid
         self.account_state(now)
@@ -397,6 +398,11 @@ class SimExchange:
             self.account_state(now)
         except MissingPrice:
             pass        # a held coin has no price yet; the next update marks it
+
+    def _group(self, symbol: str) -> str:
+        if self.corr_groups is None:
+            return corr_group(symbol)
+        return self.corr_groups.get(symbol, DEFAULT_CORR_GROUP)
 
     def _entry_slippage(self) -> Decimal:
         base = D(self.entry_slippage_pct) if self.entry_slippage_pct is not None else self.cfg.risk.entry_slippage_pct
