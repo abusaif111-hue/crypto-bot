@@ -142,6 +142,17 @@ def test_module4_backtest_uses_the_venue_interface_not_the_adapter():
         assert not any(m.startswith(("bot.news", "bot.llm", "bot.execution")) for m in imports), f
 
 
+def test_only_execution_and_the_cli_can_reach_the_trading_adapter():
+    """Orders are placed only by bot.execution (through the risk engine) and checked by bot check-trading."""
+    for f in SRC.rglob("*.py"):
+        rel = f.relative_to(SRC).as_posix()
+        if "bot.exchange.trading" in imports_of(f) or "from bot.exchange import trading" in f.read_text():
+            assert rel == "cli.py" or rel.startswith("execution/"), rel
+    text = (SRC / "exchange" / "trading.py").read_text()
+    assert text.count("self.client.send(") == 1                       # every call goes through _call's allow-list
+    assert "binance_sdk_wallet" not in text and "withdraw/" not in text and "transfer" not in text.lower()
+
+
 def test_forward_test_uses_no_adapter_no_orders_and_never_the_holdout():
     """bot.forward fixes the test and checks progress; trading happens only in the paper runner."""
     f = SRC / "forward.py"

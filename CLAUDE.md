@@ -102,6 +102,13 @@ bot paper status
    history before the forward start; nothing there is traded or measured (enforced by tests). Do not change
    the report's checks after the forward test has started.
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
+   (5a done: `bot.exchange.trading.BinanceTrader`, testnet only, 7 allow-listed endpoints, `bot check-trading`;
+   only `bot.execution` and the CLI may import it). Never re-send an order whose outcome is unknown: Binance
+   accepts a repeated client order ID once the first order filled. Look it up; if still unknown, block entries.
+   The testnet key is `BINANCE_TESTNET_*`, separate from the live read-only key.
+   **Sultan's decision (23 Oct 2026):** after the testnet gate (5 clean round trips), go live with a small,
+   capped amount without waiting for the paper review; the H2b forward test keeps running. Sultan sets the
+   cap and flips the live switch himself (1 USDT, his first figure, is below Binance's 5 USDT minimum order).
 6. Loss-review loop, dashboard (FastAPI, not public), Telegram alerts
 7. News + LLM, advisory/veto only
 
