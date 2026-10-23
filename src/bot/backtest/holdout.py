@@ -1,8 +1,9 @@
 """The one-time holdout test (module 4, step 3; rules approved by Sultan before any holdout result).
 
 Only Sultan runs it, with a typed confirmation. Every opening is recorded in
-`<data dir>/holdout-log.json` before any holdout candle is read; a second run of
-the same strategy is marked VOID and cannot qualify.
+`<data dir>/holdout-log.json` before any holdout candle is read. The holdout can be
+used once in total: after the first opening, by any strategy, every later run is
+marked VOID and cannot qualify (approved by Sultan, docs/h2b-plan.md section 5).
 
 Procedure:
 1. The strategy must have passed the walk-forward part of the selection rule
@@ -68,7 +69,7 @@ def open_holdout(data_dir: Path, strategy: str, operator: str, confirm: str) -> 
     if not operator.strip():
         raise HoldoutLocked("the holdout needs an operator name")
     log = read_log(data_dir)
-    previous = [r["started_at"] for r in log if r["strategy"] == strategy]
+    previous = [f"{r['strategy']} at {r['started_at']}" for r in log]     # any strategy: the year is spent
     opened = _now()
     log.append({"strategy": strategy, "operator": operator, "started_at": opened, "status": "started",
                 "void": bool(previous), "previous_runs": previous})
@@ -189,7 +190,7 @@ def _pc(x: Decimal | None) -> str:
 
 def verdict(ev: HoldoutEvaluation) -> str:
     if ev.void:
-        return ("VOID: the holdout was already used for this strategy (" + ", ".join(ev.previous_runs) +
+        return ("VOID: the holdout was already used (" + ", ".join(ev.previous_runs) +
                 "). This run cannot qualify anything.")
     if ev.passes:
         return ("PASSES the full selection rule (walk-forward and holdout). It may go to paper trading "

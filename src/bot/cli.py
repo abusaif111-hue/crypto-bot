@@ -475,7 +475,7 @@ def _backtest_holdout(args: argparse.Namespace, out=None) -> int:
     out.write(f"Holdout opened by {args.operator} at {ticket.opened_at} and recorded in "
               f"{data_dir / holdout.LOG_FILE}.\n")
     if ticket.void:
-        out.write(f"WARNING: the holdout was already used for {args.strategy} ({', '.join(ticket.previous_runs)}). "
+        out.write(f"WARNING: the holdout was already used ({', '.join(ticket.previous_runs)}). "
                   f"This run is VOID and cannot qualify anything.\n")
     meta["holdout"] = f"opened by {args.operator} at {ticket.opened_at}"
 

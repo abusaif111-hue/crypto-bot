@@ -210,9 +210,10 @@ Rules fixed before any holdout result (approved by Sultan):
 - Before anything is opened, the command checks the confirmation phrase, that the data reaches
   2026-10-01, that a passing walk-forward report exists for this config and these coins, and
   free memory; a mistake never uses up the holdout.
-- Every opening is recorded in `~/backtest-data/holdout-log.json`; a second run for the same
-  strategy is marked VOID and cannot qualify. A failure rejects the strategy: no adjusting
-  and re-running.
+- Every opening is recorded in `~/backtest-data/holdout-log.json`. The holdout can be used once
+  in total: after the first opening, every later run, for any strategy, is marked VOID and
+  cannot qualify (tightened after H2 used it; approved by Sultan). A failure rejects the
+  strategy: no adjusting and re-running.
 
 Result (23 Oct 2026): **H2 failed the holdout** (27 trades, −2.16 USDT per trade, −4.05 with
 doubled costs) and is rejected. The holdout year is spent; no strategy can be judged on it again.
@@ -326,8 +327,8 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
 
 ## Next modules
 
-4. H2b (`docs/h2b-plan.md`): the strategy and paged candle history are done; next the stricter
-   holdout lock, strategy exits in the paper runner (it must also ask strategies once per finished
+4. H2b (`docs/h2b-plan.md`): the strategy, paged candle history and the stricter holdout lock are
+   done; next strategy exits in the paper runner (it must also ask strategies once per finished
    candle, not every 5-second tick), and the forward-test mode
 5. Order execution with protection checks and reconciliation
 6. Dashboard and Telegram alerts
