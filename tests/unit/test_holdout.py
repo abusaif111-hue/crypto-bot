@@ -47,10 +47,19 @@ def test_every_opening_is_recorded_and_a_second_is_void(tmp_path):
     assert not t1.void
     holdout.finish(tmp_path, "H2", t1, "FAILS", "/r")
     t2 = holdout.open_holdout(tmp_path, "H2", "Sultan", PHRASE)
-    assert t2.void and t2.previous_runs == [t1.opened_at]
+    assert t2.void and t2.previous_runs == [f"H2 at {t1.opened_at}"]
     log = holdout.read_log(tmp_path)
     assert [r["status"] for r in log] == ["completed", "started"] and log[1]["void"] is True
-    assert not holdout.open_holdout(tmp_path, "H1", "Sultan", PHRASE).void   # per strategy
+
+
+def test_once_any_strategy_used_the_holdout_every_later_run_is_void(tmp_path):
+    """The year is spent for everyone (docs/h2b-plan.md section 5), including runs that never finished."""
+    first = holdout.open_holdout(tmp_path, "H2", "Sultan", PHRASE)          # crashed: never finished
+    other = holdout.open_holdout(tmp_path, "H1", "Sultan", PHRASE)
+    assert other.void and other.previous_runs == [f"H2 at {first.opened_at}"]
+    third = holdout.open_holdout(tmp_path, "H3", "Sultan", PHRASE)
+    assert third.void and len(third.previous_runs) == 2
+    assert [r["void"] for r in holdout.read_log(tmp_path)] == [False, True, True]
 
 
 def test_holdout_candles_need_a_ticket(tmp_path):
