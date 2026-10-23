@@ -142,6 +142,17 @@ def test_module4_backtest_uses_the_venue_interface_not_the_adapter():
         assert not any(m.startswith(("bot.news", "bot.llm", "bot.execution")) for m in imports), f
 
 
+def test_forward_test_uses_no_adapter_no_orders_and_never_the_holdout():
+    """bot.forward fixes the test and checks progress; trading happens only in the paper runner."""
+    f = SRC / "forward.py"
+    imports = imports_of(f)
+    assert "bot.exchange.binance" not in imports and not (imports & NETWORK), imports
+    assert not any(m.startswith(("bot.news", "bot.llm", "bot.execution", "bot.paper")) for m in imports), imports
+    text = f.read_text()
+    for banned in ("HoldoutTicket", "load_through_holdout", "holdout=", "submit(", "evaluate("):
+        assert banned not in text, banned
+
+
 def test_only_the_holdout_command_can_open_the_holdout():
     """The ticket key, the holdout loader and the engine's holdout option are used in one place each."""
     for f in SRC.rglob("*.py"):

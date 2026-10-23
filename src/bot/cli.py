@@ -4,6 +4,7 @@
     bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 [--symbol BTCUSDT]
     bot check-binance [--public-only] [--details]
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
+    bot forward start | run | status | resume | block    (the H2b forward test, simulated money only)
     bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b)
     bot backtest holdout                                  (the one-time holdout test; Sultan only)
 
@@ -201,19 +202,27 @@ def _runner_active(state_dir: Path) -> bool:
 
 
 def _paper_status(args: argparse.Namespace) -> int:
+    from bot.paper.runner import STATE_FILE
+
+    cfg = load_config(args.config)
+    state_dir = _paper_dir(args)
+    if not (state_dir / STATE_FILE).exists():
+        print(f"No paper account yet in {state_dir}. Start one with: bot paper run")
+        return 1
+    print(f"Paper account in {state_dir} (simulated money only)")
+    _print_account(state_dir, cfg, gate=True)
+    return 0
+
+
+def _print_account(state_dir: Path, cfg, gate: bool):
+    """Runner, mode, equity, positions and trades of a saved simulated account; returns the simulator."""
     import json
 
     from bot.core.money import fmt
     from bot.paper import store
     from bot.paper.runner import STATE_FILE
 
-    cfg = load_config(args.config)
-    state_dir = _paper_dir(args)
-    path = state_dir / STATE_FILE
-    if not path.exists():
-        print(f"No paper account yet in {state_dir}. Start one with: bot paper run")
-        return 1
-    data = json.loads(path.read_text())
+    data = json.loads((state_dir / STATE_FILE).read_text())
     sim = store.from_dict(data, cfg, market=None, clock=lambda: data["saved_at"])
     D = Decimal
     equity = sim.equity()
@@ -223,7 +232,6 @@ def _paper_status(args: argparse.Namespace) -> int:
     fees = sum((f.fee for f in sim.fills), D(0))
     days = (data["saved_at"] - sim.created_at) / 86400
     saved = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(data["saved_at"]))
-    print(f"Paper account in {state_dir} (simulated money only)")
     print(f"Runner: {'running' if _runner_active(state_dir) else 'NOT running'}; last saved {saved}")
     print(f"Mode: {sim.modes.mode.value}" + (f"; active breakers: {', '.join(sorted(sim.modes.active_breaches))}"
                                               if sim.modes.active_breaches else ""))
@@ -241,9 +249,10 @@ def _paper_status(args: argparse.Namespace) -> int:
         print("Open positions: none")
     print(f"Closed trades: {len(trades)} ({wins} profitable), total P&L "
           f"{sum((t.pnl for t in trades), D(0)):+.2f} USDT")
-    print(f"Paper review gate: {days:.1f} of {PAPER_GATE_WEEKS * 7} days, {len(trades)} of {PAPER_GATE_TRADES} trades, "
-          f"{wins} of {PAPER_GATE_PROFITABLE} profitable (rule violations are reviewed separately)")
-    return 0
+    if gate:
+        print(f"Paper review gate: {days:.1f} of {PAPER_GATE_WEEKS * 7} days, {len(trades)} of {PAPER_GATE_TRADES} "
+              f"trades, {wins} of {PAPER_GATE_PROFITABLE} profitable (rule violations are reviewed separately)")
+    return sim
 
 
 def _paper_request(kind: str):
@@ -260,17 +269,146 @@ def _paper_request(kind: str):
                            hours=args.hours, invalidation=args.reason, strategy="manual")
         state_dir = _paper_dir(args)
         write_request(state_dir, kind, **payload)
-        print(f"Request '{kind}' queued for the paper runner in {state_dir}.")
+        print(f"Request '{kind}' queued for the runner in {state_dir}.")
         if kind == "trade":
             print("It still goes through the risk engine; see the result in: bot paper status, or journal.jsonl")
         if not _runner_active(state_dir):
-            print("Note: the paper runner is not running; the request waits until it starts.")
+            print("Note: the runner is not running; the request waits until it starts.")
         return 0
     return handler
 
 
 DEFAULT_DATA_DIR = "~/backtest-data"
 DEFAULT_REPORTS_DIR = "~/backtests"
+DEFAULT_FORWARD_DIR = "~/forward-h2b"
+FORWARD_LABEL = "FORWARD TEST of H2b (simulated money only; does not count toward the Stage 6 paper review)"
+
+
+def _forward_cfg(base, symbols):
+    """The config file with the forward test's four coins as its universe (as the H2b backtest used)."""
+    return type(base).model_validate({**base.model_dump(), "universe": list(symbols)})
+
+
+def _forward_start(args: argparse.Namespace, out=None) -> int:
+    """Sultan only, once: fixes H2b's settings, coins and fingerprints before the first trade."""
+    from bot import forward
+    from bot.backtest import history, report, universe
+
+    out = out or sys.stdout
+    state_dir = Path(os.path.expanduser(args.state_dir))
+    data_dir = Path(os.path.expanduser(args.data_dir))
+    base = load_config(args.config)
+    try:
+        if args.confirm != forward.CONFIRM_PHRASE:
+            raise forward.ForwardError(f'type --confirm "{forward.CONFIRM_PHRASE}" exactly to start the forward test')
+        u = universe.load_universe(data_dir)
+        forward.check_coins(list(u["symbols"]), u["groups"])
+        cfg = _forward_cfg(base, u["symbols"])
+        research = {s: history.load(data_dir, s, "4h") for s in u["symbols"]}
+        rules = {s: history.load_rules(data_dir, s) for s in u["symbols"]}
+        need, free = universe.memory_needed_mb(len(research)), universe.available_memory_mb()
+        if free is not None and free < need + 30:
+            raise forward.ForwardError(f"choosing the settings needs about {need} MB of memory plus a margin and "
+                                       f"only {free} MB is free; stop the paper service for a few minutes "
+                                       f"(systemctl stop bot-paper) and try again")
+
+        def say(msg):
+            out.write(f"  {time.strftime('%H:%M:%S', time.gmtime())} {msg}\n")
+            out.flush()
+
+        commit = report.provenance(base, {}, report.CostModel())["git_commit"]
+        ft = forward.start(state_dir, research, rules, cfg, base, args.operator, args.confirm, time.time(),
+                           u["groups"], commit, progress=say)
+    except (forward.ForwardError, history.DataError) as e:
+        print(f"Error: {e}\nThe forward test was not started.", file=sys.stderr)
+        return 2
+    out.write(f"\n{FORWARD_LABEL}\nStarted by {ft.operator} on {forward.when(ft.started_at)}; recorded in "
+              f"{state_dir / forward.FORWARD_FILE}.\n"
+              f"Settings (fixed for the whole test): {', '.join(f'{k}={v}' for k, v in ft.params.items())}\n"
+              f"Coins: {'; '.join(f'{s} ({g})' for s, g in ft.corr_groups.items())}\n"
+              f"Next, as root: bash /home/bot/crypto-bot/scripts/install_forward_service.sh\n")
+    return 0
+
+
+def _forward_run(args: argparse.Namespace, make_exchange=None, out=None) -> int:
+    """The forward-test runner (the bot-forward service): the paper runner with H2b and no manual trades."""
+    from bot import forward
+    from bot.exchange.binance import BinanceReadOnly
+    from bot.paper.runner import PaperRunner, RunnerLock, RunnerLocked
+    from bot.paper.store import StateError
+
+    base = load_config(args.config)
+    if base.environment.value not in ("paper", "sim") or base.live_trading:
+        print(f"Error: the forward test needs environment paper or sim (config says {base.environment.value})",
+              file=sys.stderr)
+        return 2
+    state_dir = Path(os.path.expanduser(args.state_dir))
+    try:
+        ft = forward.load(state_dir)
+        forward.check_unchanged(ft, base)
+        strategy = forward.make_strategy(ft)
+        market = (make_exchange or BinanceReadOnly)(environment=_binance_host_for(base.environment.value))
+        with RunnerLock(state_dir):
+            runner = PaperRunner.open(state_dir, _forward_cfg(base, ft.symbols), market, out=out or sys.stdout,
+                                      strategies=[strategy], manual_trades=False,
+                                      sim_kw={"corr_groups": dict(ft.corr_groups)})
+
+            def stop(signum, frame):
+                runner.stop_requested = True
+
+            old = {s: signal.signal(s, stop) for s in (signal.SIGTERM, signal.SIGINT)}
+            try:
+                runner.run(interval_s=args.interval, max_ticks=args.ticks)
+            finally:
+                for s, h in old.items():
+                    signal.signal(s, h)
+    except (forward.ForwardError, RunnerLocked, StateError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _forward_status(args: argparse.Namespace) -> int:
+    import json
+
+    from bot import forward
+    from bot.paper.runner import CLOCK_FILE, STATE_FILE
+
+    state_dir = Path(os.path.expanduser(args.state_dir))
+    try:
+        ft = forward.load(state_dir)
+    except forward.ForwardError as e:
+        print(str(e))
+        return 1
+    base = load_config(args.config)
+    print(FORWARD_LABEL)
+    print(f"Folder {state_dir}; started by {ft.operator} on {forward.when(ft.started_at)}; settings "
+          f"{', '.join(f'{k}={v}' for k, v in ft.params.items())}; coins "
+          f"{'; '.join(f'{s} ({g})' for s, g in ft.corr_groups.items())}")
+    try:
+        forward.check_unchanged(ft, base)
+    except forward.ForwardError as e:
+        print(f"STOPPED: {e}")
+    if not (state_dir / STATE_FILE).exists():
+        print("The runner has not started yet: bash /home/bot/crypto-bot/scripts/install_forward_service.sh")
+        return 0
+    sim = _print_account(state_dir, _forward_cfg(base, ft.symbols), gate=False)
+    clock = state_dir / CLOCK_FILE
+    last = json.loads(clock.read_text()).get(ft.strategy) if clock.exists() else None
+    p = forward.progress(ft, forward.read_journal(state_dir), last, len(sim.trades), time.time())
+    print(f"Day {p.days:.0f} of at least {forward.MIN_DAYS} (at most {forward.MAX_DAYS}); closed trades "
+          f"{p.trades} of at least {forward.MIN_TRADES}")
+    print(f"Decisions missed: {p.missed_hours} hours ({p.outage_share * 100:.1f}% of the time"
+          + ("; above 10%, so the end dates move by the time missed)" if p.outage_share > forward.OUTAGE_SHARE
+             else "; up to 10% does not move the end dates)"))
+    print(f"Can be judged from {forward.when(p.earliest_end)} once {forward.MIN_TRADES} trades have closed; "
+          f"at the latest on {forward.when(p.latest_end)}")
+    print({"running": "Status: running. Pass or fail is judged once, at the end, by the end-of-test report.",
+           "ready to judge": "Status: READY TO JUDGE: run the end-of-test report.",
+           "ended": "Status: ENDED (24-month limit): run the end-of-test report.",
+           "failed": f"Status: FAILED: the 6% drawdown breaker tripped on "
+                     f"{forward.when(p.failed_at or 0)}. H2b fails the forward test (plan section 3)."}[p.state])
+    return 0
 
 
 def _backtest_fetch(args: argparse.Namespace, make_exchange=None) -> int:
@@ -531,6 +669,23 @@ def main(argv: list[str] | None = None) -> int:
             q.add_argument("--hours", type=int, default=72, help="time stop: sell after this many hours")
     for q in psub.choices.values():
         q.add_argument("--state-dir", default=DEFAULT_PAPER_DIR, help="where the paper account is kept")
+    fw = sub.add_parser("forward", help="the H2b forward test: live prices, simulated money, its own account")
+    fsub = fw.add_subparsers(dest="forward_cmd", required=True)
+    fs = fsub.add_parser("start", help="Sultan only, once: fix H2b's settings and coins, then start the clock")
+    fs.add_argument("--operator", required=True)
+    fs.add_argument("--confirm", required=True, help="the exact confirmation phrase")
+    fs.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
+    fr = fsub.add_parser("run", help="run the forward test until stopped (used by the bot-forward service)")
+    fr.add_argument("--interval", type=float, default=5.0, help="seconds between price checks")
+    fr.add_argument("--ticks", type=int, default=None, help=argparse.SUPPRESS)
+    fsub.add_parser("status", help="days, trades, missed decisions and the end dates")
+    for name, help_ in (("resume", "allow new entries (refused while a breaker is active)"),
+                        ("block", "block new entries; exits keep working")):
+        q = fsub.add_parser(name, help=help_)
+        q.add_argument("--operator", required=True)
+        q.add_argument("--reason", required=True, help="10+ characters")
+    for q in fsub.choices.values():
+        q.add_argument("--state-dir", default=DEFAULT_FORWARD_DIR, help="where the forward-test account is kept")
     bp = sub.add_parser("backtest", help="price history and backtests (research period only; holdout locked)")
     bsub = bp.add_subparsers(dest="backtest_cmd", required=True)
     bsub.add_parser("screen", help="screen Binance USDT pairs for the wider H2 re-test (fixed rules)")
@@ -560,6 +715,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "backtest":
             return {"screen": _backtest_screen, "fetch": _backtest_fetch, "baselines": _backtest_baselines,
                     "run": _backtest_run, "holdout": _backtest_holdout}[args.backtest_cmd](args)
+        if args.cmd == "forward":
+            return {"start": _forward_start, "run": _forward_run, "status": _forward_status,
+                    "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
         if args.cmd == "paper":
             return {"run": _paper_run, "status": _paper_status, "resume": _paper_request("resume"),
                     "block": _paper_request("block"), "trade": _paper_request("trade")}[args.paper_cmd](args)

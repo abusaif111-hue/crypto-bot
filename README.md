@@ -240,6 +240,37 @@ Result (23 Oct 2026, run on the server): H2b **passed all 7 checks** on BTC, ETH
 doubled costs; 3 of the 8 test windows lost money. This data has been used many times, so the
 pass is necessary but proves little; the forward test decides.
 
+### The H2b forward test (Sultan starts it, once)
+
+H2b runs on live prices with 10,000 USDT of simulated money in its **own account**
+(`~/forward-h2b`, service `bot-forward`), separate from paper trading. It does not count
+toward the Stage 6 paper review. Rules from the plan (`docs/h2b-plan.md`, section 3):
+
+- **Fixed at the start**, in `~/forward-h2b/forward.json`: H2b's settings, chosen by the
+  walk-forward method on 2023-10 to 2025-09 (research data only; the spent holdout year is not
+  used); the coins BTC and ETH (one group), XRP and BNB (each alone); fingerprints of H2b's code
+  and of the config. If either changes, the service refuses to run: a change to H2b restarts
+  the test from zero, in a new folder. A forward test never restarts in place.
+- **Only H2b trades**: manual `trade` requests are refused in this account.
+- **Length:** at least 12 months and 30 closed trades, at most 24 months. If more than 10% of
+  the time is missed (runner down or failing), both dates move by the time missed.
+- **Early end only for failure:** if the 6% drawdown breaker trips, H2b fails at once.
+- **Judged once, at the end**, by the end-of-test report with the 6 checks (next module).
+
+On the server, as root:
+
+```bash
+bash /home/bot/crypto-bot/scripts/install_forward_service.sh   # first time: installs the "forward" command
+systemctl stop bot-paper                                        # frees memory while settings are chosen
+nohup forward start --operator Sultan --confirm "I am starting the H2b forward test" > /home/bot/forward-start.log 2>&1 &
+tail -f /home/bot/forward-start.log                             # wait for "Started by", then Ctrl+C
+systemctl start bot-paper
+paper resume --operator Sultan --reason "restart after forward start"
+bash /home/bot/crypto-bot/scripts/install_forward_service.sh   # second time: starts the service
+forward resume --operator Sultan --reason "start the H2b forward test"
+forward status
+```
+
 ## How a trade is sized
 
 1. Entry is assumed to fill slightly worse than planned (0.05%), and the stop
@@ -326,6 +357,10 @@ bot; `resume(operator, reason)` allows them.
 - Strategies in the paper runner: asked once per finished candle, a restart neither repeats nor
   skips a decision, outages are logged, failures are logged once and retried every minute, and a
   strategy can only exit its own positions.
+- Forward test: started once with the exact phrase and the plan's coins, never restarted or
+  overwritten in place; settings chosen on 2023-10 to 2025-09 from research data only; changed
+  H2b code or config stops it; no manual trades; the 12/24-month, 30-trade and outage rules and
+  the early failure on the drawdown breaker have worked examples.
 - Candle history longer than Binance's 1,000 per request is fetched page by page, and a failed
   page fails closed.
 
@@ -340,9 +375,9 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
 
 ## Next modules
 
-4. H2b (`docs/h2b-plan.md`): the strategy, paged candle history, the stricter holdout lock and
-   strategies in the paper runner are done; H2b passed the walk-forward check (23 Oct 2026);
-   next the forward-test mode
+4. H2b (`docs/h2b-plan.md`): the strategy, paged candle history, the stricter holdout lock,
+   strategies in the paper runner and the forward test (start, run, status) are done; H2b passed
+   the walk-forward check (23 Oct 2026); next the forward test's end-of-test report (6 checks)
 5. Order execution with protection checks and reconciliation
 6. Dashboard and Telegram alerts
 7. News and AI analysis (advisory only)
