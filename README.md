@@ -312,8 +312,31 @@ cd ~/crypto-bot && .venv/bin/bot check-trading            # checks the key and s
 
 `check-trading` places nothing: Binance validates a test order without trading.
 
-Next: 5b protected entries (stop-loss and take-profit placed with the entry, checked after every
-fill), 5c reconciliation, 5d the testnet runner with the 5-clean-round-trips counter, 5e alerts.
+**Protected entries (5b, `bot.execution.entry`).** The only way the bot opens a position on an
+exchange. `submit()` runs the risk engine itself, then sends one Binance OPOCO order list:
+
+- a **fill-or-kill** BUY at the engine's entry price: it fills completely or not at all, so a
+  partly filled buy never waits unprotected;
+- once it has filled, a SELL **take-profit** (LIMIT_MAKER) and a SELL **stop-loss** (market
+  STOP_LOSS; where Binance offers only STOP_LOSS_LIMIT, its limit sits at the stop minus the coin's
+  stop-slippage allowance, the loss the engine already sized for) on the coins actually received.
+
+After the fill, both protective orders are looked up by their own IDs: they must be open, on the
+SELL side, at the planned prices and for the coins received. If not, the protection is cancelled,
+the coins are sold at market and new entries are blocked. A trade too small for its stop order to
+meet Binance's minimum is refused before sending. Verify on testnet: OPOCO with a fill-or-kill buy.
+
+One complete protected trade on the testnet, recorded toward the Stage 5 gate (5 clean round trips):
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot testnet-roundtrip                # BTCUSDT, stop 1.5%, sized on 1,000 USDT
+.venv/bin/bot testnet-roundtrip --symbol ETHUSDT --hold 30
+```
+
+It enters, confirms the protection, holds, cancels the protection, sells, and checks that nothing of
+the trade is left open. Each attempt goes to `~/testnet/roundtrips.jsonl`; only clean ones count.
+
+Next: 5c reconciliation, 5d the testnet runner (H2b placing real testnet orders), 5e alerts.
 
 ## How a trade is sized
 
@@ -412,6 +435,10 @@ bot; `resume(operator, reason)` allows them.
 - Trading adapter (testnet): an order whose outcome is unknown is looked up, never sent twice;
   bad orders are never sent; only the 7 allow-listed endpoints; testnet only; only the execution
   code and `check-trading` can reach it; `check-trading` sends a test order only.
+- Protected entries: the risk engine runs on every submit and nothing is sent when it says no; one
+  OPOCO list with a fill-or-kill buy at the engine's prices and size; the fee taken in the coin is
+  allowed for; unconfirmed protection (missing, not open, wrong price, type or size) means sell at
+  market and block; a failed emergency sale says act now; only `entry.submit` places entries.
 - Candle history longer than Binance's 1,000 per request is fetched page by page, and a failed
   page fails closed.
 
@@ -429,7 +456,7 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
 4. H2b (`docs/h2b-plan.md`): the strategy, paged candle history, the stricter holdout lock,
    strategies in the paper runner and the forward test (start, run, status, end-of-test report) are
    done; H2b passed the walk-forward check (23 Oct 2026); the forward test is Sultan's to start
-5. Order execution on the testnet: 5a trading adapter done; next protected entries, reconciliation,
-   the testnet runner (5 clean round trips) and alerts
+5. Order execution on the testnet: 5a trading adapter and 5b protected entries with testnet round
+   trips done; next reconciliation, the testnet runner and alerts
 6. Dashboard and Telegram alerts
 7. News and AI analysis (advisory only)

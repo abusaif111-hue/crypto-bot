@@ -106,6 +106,11 @@ bot paper status
    only `bot.execution` and the CLI may import it). Never re-send an order whose outcome is unknown: Binance
    accepts a repeated client order ID once the first order filled. Look it up; if still unknown, block entries.
    The testnet key is `BINANCE_TESTNET_*`, separate from the live read-only key.
+   5b done: `bot.execution.entry.submit()` is the only way to open an exchange position; it calls `evaluate()`
+   itself, sends one OPOCO list (BUY LIMIT FOK, SELL LIMIT_MAKER take-profit, SELL STOP_LOSS or STOP_LOSS_LIMIT
+   stop), confirms both protective orders after the fill, and on any doubt sells at market and blocks entries.
+   `bot testnet-roundtrip` runs one protected trade on the testnet; clean ones count toward the gate
+   (`~/testnet/roundtrips.jsonl`).
    **Sultan's decision (23 Oct 2026):** after the testnet gate (5 clean round trips), go live with a small,
    capped amount without waiting for the paper review; the H2b forward test keeps running. Sultan sets the
    cap and flips the live switch himself (1 USDT, his first figure, is below Binance's 5 USDT minimum order).

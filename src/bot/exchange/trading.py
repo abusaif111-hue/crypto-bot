@@ -1,9 +1,14 @@
-"""Binance Spot trading adapter (module 5a): single orders on the SPOT TESTNET only.
+"""Binance Spot trading adapter (module 5a-5b): orders on the SPOT TESTNET only.
 
 Separate from the read-only adapter (`bot.exchange.binance`), which stays read-only. This
 class may call only the endpoints in TRADE_ENDPOINTS, and refuses any environment but the
 testnet: live orders need Sultan's live switch, a later module. Only `bot.execution` (and
 the `bot check-trading` command) may use it; every entry there goes through the risk engine.
+
+Protected entries (5b) are one OPOCO order list: a BUY LIMIT fill-or-kill working order and,
+once it has fully filled, a SELL take-profit (LIMIT_MAKER) and a SELL stop-loss (STOP_LOSS, or
+STOP_LOSS_LIMIT where STOP_LOSS is not offered) on the quantity actually received (Spot API
+docs, OPO FAQ). Fill-or-kill, so a partly filled buy never waits unprotected.
 
 Never two orders for one idea. Binance accepts a second order with the same client order ID
 once the first has filled, so a blind retry could buy twice. When an order's outcome is
@@ -39,6 +44,8 @@ TRADE_ENDPOINTS: dict[tuple[str, str], int] = {
     ("GET", "/api/v3/openOrders"): 6,
     ("GET", "/api/v3/account"): 20,
     ("GET", "/api/v3/myTrades"): 20,
+    ("POST", "/api/v3/orderList/opoco"): 1,
+    ("DELETE", "/api/v3/orderList"): 1,
 }
 ENVIRONMENTS = ("testnet",)            # live: only with Sultan's live switch (a later module)
 AMBIGUOUS_CODES = {-1006, -1007}       # "execution status unknown"
@@ -147,6 +154,8 @@ class OrderState:
     quote_qty: Decimal                     # USDT spent (BUY) or received (SELL) so far
     price: Decimal
     fills: tuple[TradeFill, ...] = ()
+    stop_price: Decimal | None = None
+    order_list_id: int = -1
 
     @property
     def final(self) -> bool:
@@ -159,7 +168,75 @@ class OrderState:
             side=d["side"], type=d["type"], orig_qty=D(d["origQty"]), executed_qty=D(d["executedQty"]),
             quote_qty=D(d.get("cummulativeQuoteQty", "0")), price=D(d.get("price", "0")),
             fills=tuple(TradeFill(D(f["price"]), D(f["qty"]), D(f["commission"]), f["commissionAsset"])
-                        for f in d.get("fills", ())))
+                        for f in d.get("fills", ())),
+            stop_price=D(d["stopPrice"]) if D(d.get("stopPrice", "0")) > 0 else None,
+            order_list_id=int(d.get("orderListId", -1)))
+
+
+@dataclass(frozen=True)
+class ProtectedEntryRequest:
+    """One OPOCO order list: BUY LIMIT FOK, then SELL take-profit above and SELL stop below."""
+    symbol: str
+    qty: Decimal
+    entry_price: Decimal
+    stop_price: Decimal
+    take_profit_price: Decimal
+    stop_type: str                     # STOP_LOSS, or STOP_LOSS_LIMIT with stop_limit_price
+    list_client_id: str
+    entry_client_id: str
+    stop_client_id: str
+    take_profit_client_id: str
+    stop_limit_price: Decimal | None = None
+
+    def problems(self, rules: SymbolRules, fee_rate: Decimal = Decimal("0.001")) -> list[str]:
+        out = []
+        if self.symbol != rules.symbol:
+            out.append(f"rules are for {rules.symbol}, not {self.symbol}")
+        if not (rules.opo_allowed and rules.oto_allowed and rules.oco_allowed):
+            out.append("this symbol does not allow OPOCO order lists (OPO, OTO and OCO must all be allowed)")
+        for cid in (self.list_client_id, self.entry_client_id, self.stop_client_id, self.take_profit_client_id):
+            if not is_valid_client_id(cid):
+                out.append(f"client ID {cid!r} is not a valid Binance ID")
+        if len({self.list_client_id, self.entry_client_id, self.stop_client_id, self.take_profit_client_id}) != 4:
+            out.append("the four client IDs must differ")
+        if not (0 < self.stop_price < self.entry_price < self.take_profit_price):
+            out.append("prices must be stop < entry < take-profit")
+        out += limit_order_violations(rules, "BUY", self.entry_price, self.qty)
+        if self.stop_type not in rules.order_types or self.stop_type not in ("STOP_LOSS", "STOP_LOSS_LIMIT"):
+            out.append(f"stop type {self.stop_type} is not offered for {rules.symbol}")
+        if self.stop_type == "STOP_LOSS_LIMIT" and not (
+                self.stop_limit_price is not None and 0 < self.stop_limit_price <= self.stop_price):
+            out.append("a STOP_LOSS_LIMIT needs a limit price at or below the stop")
+        if self.stop_type == "STOP_LOSS" and self.stop_limit_price is not None:
+            out.append("a STOP_LOSS takes no limit price")
+        if "LIMIT_MAKER" not in rules.order_types:
+            out.append(f"LIMIT_MAKER (the take-profit) is not offered for {rules.symbol}")
+        for name, p in (("stop", self.stop_price), ("take-profit", self.take_profit_price),
+                        ("stop limit", self.stop_limit_price)):
+            if p is not None and rules.tick_size > 0 and not is_multiple(p, rules.tick_size):
+                out.append(f"{name} price not a multiple of tickSize")
+        # The protection is sized on the coins received after the buy fee; it must still be a valid order.
+        protected = self.qty * (1 - 2 * D(fee_rate))
+        lowest = min(p for p in (self.stop_price, self.stop_limit_price) if p is not None)
+        if protected * lowest < rules.min_notional * Decimal("1.02"):
+            out.append(f"too small to protect: the stop order would be worth about {protected * lowest:.2f} USDT, "
+                       f"below Binance's minimum {rules.min_notional}")
+        if protected < rules.min_qty:
+            out.append("too small to protect: the protected quantity would be below minQty")
+        return out
+
+    def params(self) -> dict[str, Any]:
+        p = {"symbol": self.symbol, "listClientOrderId": self.list_client_id, "newOrderRespType": "FULL",
+             "workingType": "LIMIT", "workingSide": "BUY", "workingClientOrderId": self.entry_client_id,
+             "workingPrice": _fmt(self.entry_price), "workingQuantity": _fmt(self.qty), "workingTimeInForce": "FOK",
+             "pendingSide": "SELL",
+             "pendingAboveType": "LIMIT_MAKER", "pendingAboveClientOrderId": self.take_profit_client_id,
+             "pendingAbovePrice": _fmt(self.take_profit_price),
+             "pendingBelowType": self.stop_type, "pendingBelowClientOrderId": self.stop_client_id,
+             "pendingBelowStopPrice": _fmt(self.stop_price)}
+        if self.stop_type == "STOP_LOSS_LIMIT":
+            p.update(pendingBelowPrice=_fmt(self.stop_limit_price), pendingBelowTimeInForce="GTC")
+        return p
 
 
 @dataclass(frozen=True)
@@ -248,6 +325,38 @@ class BinanceTrader:
                 return self._confirm(req, "Binance reports a duplicate client order ID")
             raise OrderRejected(f"Binance refused the order: {e.message}", e.code) from None
         return OrderState.parse(data)
+
+    def place_protected_entry(self, req: ProtectedEntryRequest, rules: SymbolRules,
+                              fee_rate: Decimal = Decimal("0.001")) -> OrderState:
+        """Send the OPOCO list once. Returns the entry (working) order's state; never sends twice."""
+        bad = req.problems(rules, fee_rate)
+        if bad:
+            raise OrderRejected("not sent: " + "; ".join(bad))
+        entry_req = OrderRequest(req.symbol, "BUY", "LIMIT", req.qty, req.entry_client_id, req.entry_price, "FOK")
+        try:
+            data = self._call("POST", "/api/v3/orderList/opoco", req.params())
+        except _Ambiguous as e:
+            return self._confirm(entry_req, str(e))
+        except _Refused as e:
+            if DUPLICATE_ORDER.lower() in e.message.lower():
+                return self._confirm(entry_req, "Binance reports a duplicate client order ID")
+            raise OrderRejected(f"Binance refused the protected entry: {e.message}", e.code) from None
+        reports = {r["clientOrderId"]: r for r in data.get("orderReports", ())}
+        if req.entry_client_id in reports:
+            return OrderState.parse(reports[req.entry_client_id])
+        return self._confirm(entry_req, "the reply did not include the entry order")
+
+    def cancel_list(self, symbol: str, list_client_id: str) -> bool:
+        """Cancel a whole order list (both protective orders). False if it no longer exists or is finished."""
+        try:
+            self._call("DELETE", "/api/v3/orderList", {"symbol": symbol, "listClientOrderId": list_client_id})
+            return True
+        except _Refused as e:
+            if e.code in (CANCEL_REJECTED, NO_SUCH_ORDER):
+                return False
+            raise ExchangeError(f"cancel order list {list_client_id}: {e.message}") from None
+        except _Ambiguous as e:
+            raise ExchangeError(f"cancel order list {list_client_id}: no answer ({e})") from None
 
     def test_order(self, req: OrderRequest, rules: SymbolRules) -> None:
         """Binance validates the order without trading (POST /api/v3/order/test)."""

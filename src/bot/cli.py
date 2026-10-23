@@ -4,6 +4,7 @@
     bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 [--symbol BTCUSDT]
     bot check-binance [--public-only] [--details]
     bot check-trading [--symbol BTCUSDT]                  (testnet trading key and a test order; places nothing)
+    bot testnet-roundtrip [--symbol BTCUSDT]              (one protected trade on the testnet, fake money)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
     bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b)
@@ -202,6 +203,95 @@ def _check_trading(args: argparse.Namespace, make_trader=None, make_reader=None,
         return 4
     print("Result: TESTNET TRADING KEY WORKS. Nothing was bought or sold.")
     return 0
+
+
+DEFAULT_TESTNET_DIR = "~/testnet"
+
+
+def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=None, load_creds=None,
+                       sleep=time.sleep, out=None) -> int:
+    """One protected round trip on the Binance SPOT TESTNET (fake money): risk engine, OPOCO entry,
+    protection confirmed, short hold, close, nothing left open. Recorded toward the 5-clean-round-trips gate.
+    Exit codes: 0 clean, 1 not clean (see the reason), 2 setup problem, 3 act now (coins may be unprotected)."""
+    from bot.core.ids import new_intent_id
+    from bot.core.money import D, pct
+    from bot.exchange.binance import BinanceReadOnly, ExchangeError
+    from bot.exchange.credentials import CredentialsError, load_credentials
+    from bot.exchange.trading import BinanceTrader, OrderStatusUnknown
+    from bot.execution import entry, roundtrip
+    from bot.market.data import MarketDataService, MarketDataUnavailable
+    from bot.risk.models import AccountState, Mode, TradeIntent
+
+    out = out or sys.stdout
+    cfg = load_config(args.config)
+    journal_dir = Path(os.path.expanduser(args.journal_dir))
+    load_creds = load_creds or (lambda: load_credentials(prefix="BINANCE_TESTNET"))
+    out.write("Binance TESTNET round trip (fake money; testnet.binance.vision)\n")
+    try:
+        creds = load_creds()
+    except CredentialsError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    trader = (make_trader or BinanceTrader)(environment="testnet", credentials=creds)
+    reader = (make_reader or BinanceReadOnly)(environment="testnet")
+    wide = type(cfg).model_validate({**cfg.model_dump(), "universe": sorted({*cfg.universe, args.symbol})})
+    data = MarketDataService(reader, wide)
+    try:
+        info = trader.account()
+        if trader.open_orders(args.symbol):
+            print(f"Error: there are open orders on {args.symbol} in the testnet account; cancel them first",
+                  file=sys.stderr)
+            return 2
+        usdt = next((b.free for b in info.balances if b.asset == "USDT"), D(0))
+        equity = min(usdt, D(args.equity))
+        rules = data.rules(args.symbol)
+        snap = data.snapshot(args.symbol)
+    except (ExchangeError, MarketDataUnavailable) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    # A test account of `equity` USDT with nothing open: the risk engine sizes the trade on that.
+    state = AccountState(mode=Mode.RUNNING, equity=equity, free_quote=equity, day_start_equity=equity,
+                         week_start_equity=equity, daily_pnl=D(0), weekly_pnl=D(0), drawdown_pct=D(0))
+    entry_price = snap.best_ask * (1 + pct(D("0.10")))
+    stop = entry_price * (1 - pct(D(args.stop_pct)))
+    intent = TradeIntent(symbol=args.symbol, side="BUY", entry_price=entry_price, stop_price=stop,
+                         take_profit_price=entry_price + 3 * (entry_price - stop), strategy="testnet-roundtrip",
+                         horizon_hours=1, invalidation="testnet round trip: closed after the hold")
+    out.write(f"  Account ........ sized as {equity:,.2f} USDT of testnet money; ask {snap.best_ask.normalize()}\n")
+    try:
+        outcome = entry.submit(intent, state, snap, rules, wide, trader, new_intent_id(), "majors", sleep=sleep)
+    except OrderStatusUnknown as e:
+        out.write(f"  Entry .......... OUTCOME UNKNOWN: {e}\n  Check the testnet account before running again.\n")
+        return 3
+    p = outcome.plan
+    out.write(f"  Risk engine .... {'accepted' if outcome.decision.accepted else 'REJECTED'}: {outcome.decision.reason}\n")
+    if p is not None:
+        out.write(f"  Order list ..... BUY {p.qty.normalize()} at {p.entry_price.normalize()} fill-or-kill; "
+                  f"stop {p.stop_type} {p.stop_price.normalize()}"
+                  f"{f' (limit {p.stop_limit_price.normalize()})' if p.stop_limit_price else ''}; "
+                  f"take-profit {p.take_profit_price.normalize()}\n")
+    out.write(f"  Entry .......... {outcome.status}: {outcome.reason}\n")
+    for n in outcome.notes:
+        out.write(f"  Note ........... {n}\n")
+    if outcome.status == entry.UNPROTECTED:
+        out.write("  ACT NOW: the coins may be unprotected on the testnet; sell them there by hand.\n")
+        rt = roundtrip.RoundTrip(outcome, problems=[outcome.reason])
+        roundtrip.record(journal_dir, rt, time.time())
+        return 3
+    if outcome.status == entry.PROTECTED:
+        out.write(f"  Protection ..... stop {outcome.stop.status} {outcome.stop.orig_qty.normalize()}, take-profit "
+                  f"{outcome.take_profit.status} {outcome.take_profit.orig_qty.normalize()}; holding {args.hold:g} s\n")
+        sleep(args.hold)
+    rt = roundtrip.close(outcome, trader, rules) if outcome.status == entry.PROTECTED else \
+        roundtrip.RoundTrip(outcome, problems=[f"entry was {outcome.status}"])
+    if rt.close is not None:
+        out.write(f"  Close .......... SELL {rt.close.executed_qty.normalize()} at market: {rt.close.status}\n")
+    for problem in rt.problems:
+        out.write(f"  Problem ........ {problem}\n")
+    clean = roundtrip.record(journal_dir, rt, time.time())
+    out.write(f"Result: {'CLEAN round trip' if rt.clean else 'NOT clean'}. Clean round trips so far: "
+              f"{clean} of {roundtrip.GATE} (journal: {journal_dir / roundtrip.JOURNAL})\n")
+    return 0 if rt.clean else 1
 
 
 DEFAULT_PAPER_DIR = "~/paper"
@@ -788,6 +878,12 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--details", action="store_true", help="list each balance instead of the total only")
     ct = sub.add_parser("check-trading", help="testnet trading key check and a test order (nothing is placed)")
     ct.add_argument("--symbol", default="BTCUSDT")
+    tr = sub.add_parser("testnet-roundtrip", help="one protected round trip on the Binance testnet (fake money)")
+    tr.add_argument("--symbol", default="BTCUSDT")
+    tr.add_argument("--stop-pct", default="1.5", help="stop distance below the entry, in percent")
+    tr.add_argument("--equity", default="1000", help="testnet USDT the risk engine sizes the trade on")
+    tr.add_argument("--hold", type=float, default=10.0, help="seconds to hold before closing")
+    tr.add_argument("--journal-dir", default=DEFAULT_TESTNET_DIR)
     pp = sub.add_parser("paper", help="paper trading on live prices with simulated money")
     psub = pp.add_subparsers(dest="paper_cmd", required=True)
     pr = psub.add_parser("run", help="run paper trading until stopped (used by the bot-paper service)")
@@ -866,7 +962,8 @@ def main(argv: list[str] | None = None) -> int:
             return {"run": _paper_run, "status": _paper_status, "resume": _paper_request("resume"),
                     "block": _paper_request("block"), "trade": _paper_request("trade")}[args.paper_cmd](args)
         return {"check-config": _check_config, "try-trade": _try_trade,
-                "check-binance": _check_binance, "check-trading": _check_trading}[args.cmd](args)
+                "check-binance": _check_binance, "check-trading": _check_trading,
+                "testnet-roundtrip": _testnet_roundtrip}[args.cmd](args)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
