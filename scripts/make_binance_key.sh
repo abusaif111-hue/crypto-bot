@@ -2,8 +2,9 @@
 # Creates the Binance API key pair ON THE SERVER and stores the API key in .env.
 #
 # Run as the "bot" user:
-#     bash ~/crypto-bot/scripts/make_binance_key.sh             # the live READ-ONLY key
-#     bash ~/crypto-bot/scripts/make_binance_key.sh --testnet   # the SPOT TESTNET trading key (fake money)
+#     bash ~/crypto-bot/scripts/make_binance_key.sh --live-read-only   # the live READ-ONLY key
+#     bash ~/crypto-bot/scripts/make_binance_key.sh --testnet          # the SPOT TESTNET trading key (fake money)
+# Any other option, or none, is refused, so a typo can never overwrite the wrong key.
 #
 # The private key is generated here and never leaves this server. You copy only
 # the PUBLIC key into Binance (API Management > Create API > Self-generated),
@@ -13,12 +14,22 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SECRETS_DIR="${HOME}/.secrets"
 ENV_FILE="${REPO_DIR}/.env"
-if [[ "${1:-}" == "--testnet" ]]; then
-  KEY_FILE="${SECRETS_DIR}/binance_testnet_ed25519.pem"
-  VAR_PREFIX=BINANCE_TESTNET
-else
-  KEY_FILE="${SECRETS_DIR}/binance_ed25519.pem"
-  VAR_PREFIX=BINANCE
+case "${1:-}" in
+  --testnet)
+    KEY_FILE="${SECRETS_DIR}/binance_testnet_ed25519.pem"
+    VAR_PREFIX=BINANCE_TESTNET ;;
+  --live-read-only)
+    KEY_FILE="${SECRETS_DIR}/binance_ed25519.pem"
+    VAR_PREFIX=BINANCE ;;
+  *)
+    echo "Say which key to set up (nothing was changed):" >&2
+    echo "  bash $0 --testnet          # the SPOT TESTNET trading key (fake money)" >&2
+    echo "  bash $0 --live-read-only   # the live READ-ONLY key (real Binance, reading only)" >&2
+    exit 1 ;;
+esac
+if [[ $# -ne 1 ]]; then
+  echo "Give exactly one option: --testnet or --live-read-only. Nothing was changed." >&2
+  exit 1
 fi
 
 if [[ $EUID -eq 0 ]]; then
@@ -94,7 +105,7 @@ set_var "${VAR_PREFIX}_API_KEY" "$API_KEY"
 set_var "${VAR_PREFIX}_PRIVATE_KEY_PATH" "$KEY_FILE"
 unset API_KEY
 
-echo "Saved. $ENV_FILE is readable only by this user and is never uploaded to GitHub."
+echo "Saved as ${VAR_PREFIX}_API_KEY. $ENV_FILE is readable only by this user and is never uploaded to GitHub."
 if [[ "$VAR_PREFIX" == BINANCE_TESTNET ]]; then
   echo "Next: run  bot check-trading  to confirm the testnet key works (it places no order)."
 else

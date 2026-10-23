@@ -80,5 +80,5 @@ This server's public IP address (Binance will need it): ${IP}
 
 Next, when you are ready to connect Binance READ-ONLY:
     su - ${BOT_USER}
-    bash ~/crypto-bot/scripts/make_binance_key.sh
+    bash ~/crypto-bot/scripts/make_binance_key.sh --live-read-only
 EOF
