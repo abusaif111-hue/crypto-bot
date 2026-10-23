@@ -82,6 +82,9 @@ bot paper status
    only the 100-trade check and is re-tested unchanged on more coins (`bot backtest screen`, rules fixed
    in `bot.backtest.universe` before any data was seen; R-08 groups by measured correlation). Do not
    change H2, the screen rules or the selection rule to make it pass; the wider universe is backtest-only.
+   H2 passed walk-forward on BTC/ETH/XRP/BNB. Step 3 is `bot backtest holdout` (`bot.backtest.holdout`):
+   only Sultan runs it; never run, simulate or preview it, never create a `HoldoutTicket` elsewhere, and
+   never change its pass rules after a result.
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
 6. Loss-review loop, dashboard (FastAPI, not public), Telegram alerts
 7. News + LLM, advisory/veto only
