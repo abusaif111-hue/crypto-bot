@@ -399,7 +399,30 @@ rule working, not a fault. If Binance resets the testnet account, the account's 
 drawdown breaker trips: stop the service, move `account.json` aside, record a new baseline and start
 again. Verify on testnet: the first H2b trade end to end, and a time stop or strategy exit.
 
-Next: 5e alerts.
+**Telegram alerts (5e, `bot.alerts`, service `bot-alerts`).** A separate service reads the journals
+the runners already write (testnet runner, paper trading, H2b forward test) and sends a short message:
+
+- 🔴 act now: coins possibly unprotected, the account not matching the ledger, a failed exit, an order
+  whose outcome is unknown, a breaker, a runner silent for 40 minutes;
+- 🟡 worth a look: entries blocked, a runner restarted, errors that repeat, entries paused or market
+  data down for over 10 minutes (shorter outages are not reported);
+- 🟢 for the record: a trade opened or closed, entries resumed, a fault cleared; and a daily check at
+  08:00 Muscat with each runner's mode and equity (no daily check means the alert service is down).
+
+It only reads files and sends messages; it imports nothing that trades. Repeats are held back (15
+minutes for 🔴, an hour for 🟡). The bot token is typed hidden, kept in `.env` (mode 600), and never
+printed or logged.
+
+Set it up once: in Telegram, open @BotFather, send `/newbot`, pick a name and a username ending in
+`bot`, and keep the token it shows (never paste it into a chat). Then on the server:
+
+```bash
+su - bot
+cd ~/crypto-bot && .venv/bin/bot alerts setup     # paste the token (hidden), then message your bot
+exit
+bash /home/bot/crypto-bot/scripts/install_alerts_service.sh      # as root: starts bot-alerts
+alerts test
+```
 
 ## How a trade is sized
 
@@ -520,6 +543,6 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
    strategies in the paper runner and the forward test (start, run, status, end-of-test report) are
    done; H2b passed the walk-forward check (23 Oct 2026); the forward test is Sultan's to start
 5. Order execution on the testnet: 5a trading adapter, 5b protected entries (gate met: 5 clean
-   round trips), 5c reconciliation and 5d the testnet runner done; next alerts
+   round trips), 5c reconciliation, 5d the testnet runner and 5e Telegram alerts done
 6. Dashboard and Telegram alerts
 7. News and AI analysis (advisory only)

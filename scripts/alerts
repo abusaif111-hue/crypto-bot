@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Short form of "bot alerts ..." for the server console. Works as root or as the bot user;
+# always runs as the bot user, never as root. Installed to /usr/local/bin/alerts by
+# scripts/install_alerts_service.sh.
+#
+#   alerts test                # send a test message to Telegram
+#   alerts setup               # connect Telegram (the token is typed hidden)
+#   alerts log [lines]         # the service log (default 30 lines)
+set -euo pipefail
+BOT_USER=bot
+
+if [[ "${1:-}" == "log" ]]; then
+  exec journalctl -u bot-alerts -n "${2:-30}" --no-pager
+fi
+if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  sed -n '6,8p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+run='cd "$HOME/crypto-bot" && exec .venv/bin/bot alerts "$@"'
+if [[ "$(id -un)" == "$BOT_USER" ]]; then
+  exec bash -c "$run" alerts "$@"
+fi
+exec sudo -u "$BOT_USER" -H bash -c "$run" alerts "$@"

@@ -7,6 +7,7 @@ its path is passed on to Binance's official SDK, which reads it to sign requests
 from __future__ import annotations
 
 import os
+import re
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,3 +84,65 @@ def load_credentials(env_file: Path | None = None, environ: dict[str, str] | Non
     if "PRIVATE KEY" not in head:
         raise CredentialsError(f"{pk} is not a PEM private key file")
     return Credentials(api_key=api_key, private_key_path=pk)
+
+
+# ---------------------------------------------------------------- Telegram alerts (module 5e)
+_TELEGRAM_TOKEN = re.compile(r"^\d{5,16}:[A-Za-z0-9_-]{30,64}$")
+
+
+@dataclass(frozen=True)
+class TelegramSettings:
+    token: str = field(repr=False)
+    chat_id: str
+
+    def __repr__(self) -> str:
+        return f"TelegramSettings(chat_id={self.chat_id!r})"
+
+
+def is_telegram_token(token: str) -> bool:
+    return bool(_TELEGRAM_TOKEN.match(token.strip()))
+
+
+def env_path(environ: dict[str, str] | None = None) -> Path:
+    environ = dict(os.environ if environ is None else environ)
+    return Path(environ.get("BOT_ENV_FILE", REPO_ROOT / ".env"))
+
+
+def load_telegram(env_file: Path | None = None, environ: dict[str, str] | None = None) -> TelegramSettings:
+    """TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from the environment or .env (bot alerts setup writes them)."""
+    environ = dict(os.environ if environ is None else environ)
+    path = Path(environ.get("BOT_ENV_FILE", env_file or REPO_ROOT / ".env"))
+    values = read_env_file(path)
+    if path.is_file():
+        _check_private(path, "The settings file")
+    token = (environ.get("TELEGRAM_BOT_TOKEN") or values.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat = (environ.get("TELEGRAM_CHAT_ID") or values.get("TELEGRAM_CHAT_ID") or "").strip()
+    if not token:
+        raise CredentialsError(f"TELEGRAM_BOT_TOKEN is not set (looked in the environment and {path}); "
+                               f"run: bot alerts setup")
+    if not is_telegram_token(token):
+        raise CredentialsError("TELEGRAM_BOT_TOKEN does not look like a token from @BotFather")
+    if not re.fullmatch(r"-?\d{1,20}", chat):
+        raise CredentialsError("TELEGRAM_CHAT_ID is not set or not a number; run: bot alerts setup")
+    return TelegramSettings(token, chat)
+
+
+def set_env_values(path: Path, values: dict[str, str]) -> None:
+    """Set KEY=VALUE lines in the settings file (others kept), written privately (mode 600)."""
+    path = Path(path)
+    lines = path.read_text().splitlines() if path.is_file() else []
+    left = dict(values)
+    out = []
+    for raw in lines:
+        key = raw.split("=", 1)[0].strip()
+        if "=" in raw and not raw.lstrip().startswith("#") and key in left:
+            out.append(f"{key}={left.pop(key)}")
+        else:
+            out.append(raw)
+    out += [f"{k}={v}" for k, v in left.items()]
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(out) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)

@@ -122,6 +122,10 @@ bot paper status
    once per finished candle with the forward test's frozen settings; entries are written PENDING first and
    go only through `entry.submit()`. Exits (`bot.execution.exit.close_trade`) never send a sale twice.
    `bot testnet start|run|status|resume|block`. Testnet only; the live switch is Sultan's.
+   5e done: `bot.alerts` (service `bot-alerts`): reads the runners' journals and sends Telegram messages
+   (🔴/🟡/🟢, repeats held back, short outages swallowed, silence and a daily check reported). It imports
+   nothing from `bot` (it cannot trade); the token is typed hidden by `bot alerts setup`, kept in `.env`,
+   and scrubbed from every error.
    **Sultan's decision (23 Oct 2026):** after the testnet gate (5 clean round trips), go live with a small,
    capped amount without waiting for the paper review; the H2b forward test keeps running. Sultan sets the
    cap and flips the live switch himself (1 USDT, his first figure, is below Binance's 5 USDT minimum order).
