@@ -429,9 +429,10 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
                                     {"meta": meta, **selection.summary(ev)})
         out.write("\n" + text + f"\nReport saved in {folder}\n\n")
         verdicts.append((name, ev.passes_walk_forward, folder))
-    out.write("Summary (walk-forward part of the selection rule; the holdout is step 3):\n")
+    out.write("Summary (walk-forward part of the selection rule; the holdout is spent):\n")
     for name, ok, folder in verdicts:
-        out.write(f"  {name}: {'passes, holdout pending' if ok else 'does not qualify'}  ({folder})\n")
+        verdict = "passes walk-forward; next a forward test, if Sultan approves" if ok else "does not qualify"
+        out.write(f"  {name}: {verdict}  ({folder})\n")
     return 0
 
 

@@ -3,8 +3,12 @@
 Every tick (default 5 seconds) it:
 1. carries out operator requests (resume, block entries, a manual trade idea),
 2. checks the latest prices of held coins and fills any simulated exit,
-3. asks each strategy for trade ideas and submits them; `SimExchange.submit`
-   runs every one through the risk engine,
+3. once per finished candle of each strategy's interval: runs the strategy's
+   exit check on the positions it opened (exit at market, raise a stop), then
+   asks it for trade ideas and submits them; `SimExchange.submit` runs every
+   one through the risk engine. The last candle each strategy decided on is
+   kept in `<state dir>/strategy-clock.json`, so a restart neither repeats nor
+   skips a decision; candles missed while the runner was down are logged,
 4. marks equity (P&L periods, drawdown, breakers) and saves the account.
 
 Operators talk to a running runner through request files in
@@ -26,23 +30,31 @@ from pathlib import Path
 from typing import Any, Callable, Protocol, TextIO
 
 from bot.core.money import D, fmt
+from bot.exchange.interface import INTERVAL_MS
 from bot.market.data import MarketDataService, MarketDataUnavailable
 from bot.paper import store
 from bot.paper.sim import ClosedTrade, EntryResult, SimExchange, as_utc
 from bot.portfolio.accounting import MissingPrice
 from bot.risk.models import TradeIntent
+from bot.strategies.base import Action, Exit, OpenTrade, RaiseStop
 
 STATE_FILE = "state.json"
 JOURNAL_FILE = "journal.jsonl"
 LOCK_FILE = "runner.lock"
 REQUESTS_DIR = "requests"
+CLOCK_FILE = "strategy-clock.json"
+RETRY_S = 60                      # a failed strategy call is retried this often within the same candle
 
 
 class Strategy(Protocol):
-    """A source of trade ideas. Strategies H1-H3 arrive with the backtester (module 4)."""
+    """A source of trade ideas (`bot.strategies`), asked once per finished candle of its interval.
+    `manage` (exits for its own open positions) is optional."""
     name: str
+    interval: str
 
     def propose(self, data: MarketDataService, now: float) -> list[TradeIntent]: ...
+
+    def manage(self, data: MarketDataService, now: float, open_trades: list[OpenTrade]) -> list[Action]: ...
 
 
 class RunnerLocked(RuntimeError):
@@ -82,11 +94,17 @@ class PaperRunner:
     _last_status: float = field(default=0.0, init=False)
     _seen_history: int = field(default=0, init=False)
     _seen_breaches: frozenset[str] = field(default=frozenset(), init=False)
+    _decided: dict[str, int] = field(default_factory=dict, init=False)          # strategy -> candle close (ms)
+    _failed: dict[str, tuple[int, float]] = field(default_factory=dict, init=False)   # -> (candle, last try)
     stop_requested: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         self.state_dir = Path(self.state_dir)
         (self.state_dir / REQUESTS_DIR).mkdir(parents=True, exist_ok=True, mode=0o700)
+        names = [getattr(s, "name", "?") for s in self.strategies]
+        if len(set(names)) != len(names):
+            raise ValueError(f"strategy names must be unique (decisions are tracked by name): {names}")
+        self._decided = _load_clock(self.state_dir / CLOCK_FILE)
         self._seen_history = len(self.sim.modes.history)
         self._seen_breaches = frozenset(self.sim.modes.active_breaches)
 
@@ -180,13 +198,48 @@ class PaperRunner:
         return result
 
     def _run_strategy(self, strategy: Strategy, now: float) -> None:
-        try:
-            intents = strategy.propose(self.sim.data, now)
-        except Exception as e:   # a broken strategy proposes nothing; exits keep running
-            self.log("strategy_error", strategy=getattr(strategy, "name", "?"), reason=f"{type(e).__name__}: {e}")
+        """Once per finished candle: the strategy's exits, then its new ideas, as in the backtester."""
+        name = getattr(strategy, "name", "?")
+        step = INTERVAL_MS[strategy.interval]
+        candle = int(now * 1000) // step * step              # close of the newest finished candle
+        last = self._decided.get(name)
+        if last is not None and last >= candle:
             return
+        failed = self._failed.get(name)
+        if failed is not None and failed[0] == candle and now - failed[1] < RETRY_S:
+            return
+        try:
+            self._apply_exits(strategy, now)
+            intents = strategy.propose(self.sim.data, now)
+        except Exception as e:   # a broken strategy or missing data: no ideas; stops and targets keep running
+            if failed is None or failed[0] != candle:
+                self.log("strategy_error", strategy=name, reason=f"{type(e).__name__}: {e}",
+                         note=f"retried every {RETRY_S} s until this candle's decision succeeds")
+            self._failed[name] = (candle, now)
+            return
+        self._failed.pop(name, None)
+        if last is not None and candle - last > step:
+            self.log("decisions_missed", strategy=name, candles=(candle - last) // step - 1,
+                     note="the runner was down or failing when these candles finished")
+        self._decided[name] = candle
+        _save_clock(self.state_dir / CLOCK_FILE, self._decided)    # before submitting: never decide twice
         for intent in intents:
-            self._submit(intent, now, source=f"strategy:{getattr(strategy, 'name', '?')}")
+            self._submit(intent, now, source=f"strategy:{name}")
+
+    def _apply_exits(self, strategy: Strategy, now: float) -> None:
+        manage = getattr(strategy, "manage", None)
+        mine = [OpenTrade(p.symbol, p.entry_price, p.stop_price, p.opened_at)
+                for p in self.sim.positions.values() if p.strategy == strategy.name]   # never manual trades
+        if manage is None or not mine:
+            return
+        for a in manage(self.sim.data, now, mine):
+            if isinstance(a, Exit):
+                t = self.sim.close_position(a.symbol, now)
+                self.log("strategy_exit", strategy=strategy.name, symbol=a.symbol, reason=a.reason)
+                if t is not None:
+                    self._log_trade(t)
+            elif isinstance(a, RaiseStop) and self.sim.raise_stop(a.symbol, a.stop, now):
+                self.log("stop_raised", strategy=strategy.name, symbol=a.symbol, stop=D(a.stop))
 
     def _process_requests(self, now: float) -> None:
         req_dir = self.state_dir / REQUESTS_DIR
@@ -223,6 +276,23 @@ class PaperRunner:
 
     def _log_trade(self, t: ClosedTrade) -> None:
         self.log("trade_closed", **asdict(t))
+
+
+def _load_clock(path: Path) -> dict[str, int]:
+    """The last candle each strategy decided on. An unreadable file stops the runner (never reset)."""
+    if not path.exists():
+        return {}
+    try:
+        return {str(k): int(v) for k, v in json.loads(path.read_text()).items()}
+    except Exception as e:
+        raise store.StateError(f"{path} is unreadable ({type(e).__name__}: {e}); fix or remove it by hand "
+                               f"after checking the journal") from None
+
+
+def _save_clock(path: Path, decided: dict[str, int]) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(decided))
+    os.replace(tmp, path)
 
 
 def _readable(v: Any) -> str:

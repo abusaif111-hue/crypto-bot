@@ -141,10 +141,10 @@ def test_resume_refused_while_a_breaker_is_active(tmp_path):
 
 
 class Proposer:
-    name = "test"
+    name, interval = "test", "4h"
 
-    def __init__(self, intents=None, error=False):
-        self.intents, self.error = intents or [], error
+    def __init__(self, intents=None, error=False, name="test"):
+        self.intents, self.error, self.name = intents or [], error, name
 
     def propose(self, data, now):
         if self.error:
@@ -156,7 +156,7 @@ class Proposer:
 def test_strategy_ideas_are_submitted_and_a_broken_strategy_does_not_stop_the_runner(tmp_path):
     intent = TradeIntent(symbol="BTCUSDT", side="BUY", entry_price=Dec("80000"), stop_price=Dec("78000"),
                          take_profit_price=Dec("86000"), strategy="test", horizon_hours=96, invalidation="x")
-    runner, _, _ = opened(tmp_path, strategies=[Proposer(error=True), Proposer([intent])])
+    runner, _, _ = opened(tmp_path, strategies=[Proposer(error=True, name="broken"), Proposer([intent])])
     write_request(tmp_path, "resume", operator="sultan", reason="start paper trading")
     runner.tick()
     ev = events(tmp_path)

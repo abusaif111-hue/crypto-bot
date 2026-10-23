@@ -90,8 +90,10 @@ bot paper status
    frozen): never edit that plan or tune H2b to pass; any change is a new strategy with a new forward
    test. H2b never runs on the holdout. Its real test is a forward test on new prices (simulated money).
    H2b is `bot.strategies.h2b_blend` (fixed values pinned by `tests/unit/test_h2b.py`). The holdout
-   lock is stricter: any earlier opening, by any strategy, makes every later run VOID. Next: strategy
-   exits in the paper runner, then the forward-test mode (plan section 5).
+   lock is stricter: any earlier opening, by any strategy, makes every later run VOID. H2b passed the
+   walk-forward check (23 Oct 2026; 104 trades, +1.90 USDT per trade with doubled costs). The paper runner
+   asks strategies once per finished candle and applies their exits to their own positions only
+   (`strategy-clock.json`). Next: the forward-test mode (plan section 5, item 4).
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
 6. Loss-review loop, dashboard (FastAPI, not public), Telegram alerts
 7. News + LLM, advisory/veto only

@@ -235,6 +235,11 @@ bot backtest run --strategy H2b --screened
 If H2b fails any check, it is dropped; nothing is tuned and re-run. If it passes, the real
 test is the forward test on new prices (later modules).
 
+Result (23 Oct 2026, run on the server): H2b **passed all 7 checks** on BTC, ETH, XRP and BNB:
+104 out-of-sample trades (Jan 2022 to Sep 2025), +392.23 USDT, +3.77 USDT per trade, +1.90 with
+doubled costs; 3 of the 8 test windows lost money. This data has been used many times, so the
+pass is necessary but proves little; the forward test decides.
+
 ## How a trade is sized
 
 1. Entry is assumed to fill slightly worse than planned (0.05%), and the stop
@@ -285,8 +290,13 @@ bot; `resume(operator, reason)` allows them.
   runner picks up within seconds; only the runner changes the account. A manual `trade`
   goes through the risk engine like any other idea. A second runner on the same account
   is refused.
-- **No strategy yet:** strategies H1–H3 come with the backtester (module 4). Until then
-  paper trading only makes the trades you submit with `bot paper trade`.
+- **Strategies:** the runner asks each strategy once per finished candle of its interval
+  (H2b: every 4 hours, deciding once a day), as the backtester does: first its exit check on
+  the positions it opened (never your manual trades), then new ideas, which go through the
+  risk engine. The last decided candle is saved in `~/paper/strategy-clock.json`, so a restart
+  neither repeats nor skips a decision; candles missed while the runner was down are logged
+  as `decisions_missed`. A failing strategy is logged once and retried every minute.
+  `bot paper run` has no strategy yet: the H2b forward test gets its own account (next module).
 
 ## What is tested
 
@@ -313,6 +323,9 @@ bot; `resume(operator, reason)` allows them.
   against the 365 days before, at exactly the 80th percentile), the exits and the history
   requirement have worked examples; future prices never change past decisions; the holdout
   command refuses it. Each of these was checked by planting a bug and seeing the test fail.
+- Strategies in the paper runner: asked once per finished candle, a restart neither repeats nor
+  skips a decision, outages are logged, failures are logged once and retried every minute, and a
+  strategy can only exit its own positions.
 - Candle history longer than Binance's 1,000 per request is fetched page by page, and a failed
   page fails closed.
 
@@ -327,9 +340,9 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
 
 ## Next modules
 
-4. H2b (`docs/h2b-plan.md`): the strategy, paged candle history and the stricter holdout lock are
-   done; next strategy exits in the paper runner (it must also ask strategies once per finished
-   candle, not every 5-second tick), and the forward-test mode
+4. H2b (`docs/h2b-plan.md`): the strategy, paged candle history, the stricter holdout lock and
+   strategies in the paper runner are done; H2b passed the walk-forward check (23 Oct 2026);
+   next the forward-test mode
 5. Order execution with protection checks and reconciliation
 6. Dashboard and Telegram alerts
 7. News and AI analysis (advisory only)
