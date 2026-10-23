@@ -116,6 +116,12 @@ bot paper status
    and `bot.execution.reconcile` (read-only: never places or cancels; anything that differs, an unknown
    outcome or an exchange error blocks new entries). `bot reconcile`; `testnet-roundtrip` reconciles
    before and after. Never loosen what reconciliation checks to make it pass.
+   5d done: `bot.execution.runner.TestnetRunner` (service `bot-testnet`, state `~/testnet`): every round it
+   reconciles (unprotected coins are sold at once; mismatches block until an operator resumes), marks the
+   capped account (`bot.execution.account`: capital + changes since the start), runs time stops, then H2b
+   once per finished candle with the forward test's frozen settings; entries are written PENDING first and
+   go only through `entry.submit()`. Exits (`bot.execution.exit.close_trade`) never send a sale twice.
+   `bot testnet start|run|status|resume|block`. Testnet only; the live switch is Sultan's.
    **Sultan's decision (23 Oct 2026):** after the testnet gate (5 clean round trips), go live with a small,
    capped amount without waiting for the paper review; the H2b forward test keeps running. Sultan sets the
    cap and flips the live switch himself (1 USDT, his first figure, is below Binance's 5 USDT minimum order).

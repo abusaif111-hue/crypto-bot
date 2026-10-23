@@ -47,6 +47,11 @@ class TrackedTrade:
     received_qty: Decimal = ZERO       # coins the bot holds while OPEN
     left_qty: Decimal = ZERO           # dust left in the account after the close
     note: str = ""
+    strategy: str = ""                 # who proposed it; a strategy manages only its own trades
+    expires_at: float = 0.0            # time stop (0: none)
+    entry_price: Decimal = ZERO        # average fill, once OPEN
+    stop_price: Decimal = ZERO         # the protective stop, once OPEN (the risk engine counts it)
+    take_profit_price: Decimal = ZERO
 
     def cid(self, kind: str, leg: int = 0) -> str:
         return client_order_id(uuid.UUID(hex=self.intent_id), kind, leg)
@@ -60,14 +65,18 @@ class TrackedTrade:
     def to_json(self) -> dict[str, Any]:
         return {"intent_id": self.intent_id, "symbol": self.symbol, "base_asset": self.base_asset,
                 "status": self.status, "created_at": self.created_at, "updated_at": self.updated_at,
-                "received_qty": str(self.received_qty), "left_qty": str(self.left_qty), "note": self.note}
+                "received_qty": str(self.received_qty), "left_qty": str(self.left_qty), "note": self.note,
+                "strategy": self.strategy, "expires_at": self.expires_at, "entry_price": str(self.entry_price),
+                "stop_price": str(self.stop_price), "take_profit_price": str(self.take_profit_price)}
 
     @staticmethod
     def from_json(d: dict[str, Any]) -> "TrackedTrade":
         if d["status"] not in NEXT:
             raise LedgerError(f"unknown trade status {d['status']!r}")
         return TrackedTrade(d["intent_id"], d["symbol"], d["base_asset"], d["status"], float(d["created_at"]),
-                            float(d["updated_at"]), D(d["received_qty"]), D(d["left_qty"]), d.get("note", ""))
+                            float(d["updated_at"]), D(d["received_qty"]), D(d["left_qty"]), d.get("note", ""),
+                            d.get("strategy", ""), float(d.get("expires_at", 0)), D(d.get("entry_price", "0")),
+                            D(d.get("stop_price", "0")), D(d.get("take_profit_price", "0")))
 
 
 @dataclass
@@ -115,18 +124,21 @@ class Ledger:
     def active(self) -> list[TrackedTrade]:
         return [t for t in self.trades.values() if t.status in (PENDING, OPEN)]
 
-    def add_pending(self, intent_id: uuid.UUID, symbol: str, base_asset: str, now: float) -> TrackedTrade:
+    def add_pending(self, intent_id: uuid.UUID, symbol: str, base_asset: str, now: float, strategy: str = "",
+                    expires_at: float = 0.0) -> TrackedTrade:
         """Call and save BEFORE sending the order."""
         if intent_id.hex in self.trades:
             raise LedgerError(f"intent {intent_id.hex} is already in the ledger; an intent is never sent twice")
         if base_asset not in self.baseline:
             raise LedgerError(f"no baseline for {base_asset}: record one first (bot reconcile --set-baseline)")
-        t = TrackedTrade(intent_id.hex, symbol, base_asset, PENDING, now, now)
+        t = TrackedTrade(intent_id.hex, symbol, base_asset, PENDING, now, now, strategy=strategy,
+                         expires_at=expires_at)
         self.trades[t.intent_id] = t
         return t
 
     def mark(self, intent_id: str, status: str, now: float, received_qty: Decimal | None = None,
-             left_qty: Decimal | None = None, note: str = "") -> TrackedTrade:
+             left_qty: Decimal | None = None, note: str = "", prices: dict[str, Decimal] | None = None) -> TrackedTrade:
+        """`prices`: entry_price, stop_price and take_profit_price, recorded when a trade opens."""
         t = self.trades.get(intent_id)
         if t is None:
             raise LedgerError(f"intent {intent_id} is not in the ledger")
@@ -139,6 +151,10 @@ class Ledger:
             t.left_qty = max(ZERO, D(left_qty))
         if note:
             t.note = note
+        for k, v in (prices or {}).items():
+            if k not in ("entry_price", "stop_price", "take_profit_price"):
+                raise LedgerError(f"unknown price {k!r}")
+            setattr(t, k, D(v))
         return t
 
     # ------------------------------------------------------------ baseline

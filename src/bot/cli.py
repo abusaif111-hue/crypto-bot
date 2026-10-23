@@ -6,6 +6,7 @@
     bot check-trading [--symbol BTCUSDT]                  (testnet trading key and a test order; places nothing)
     bot testnet-roundtrip [--symbol BTCUSDT]              (one protected trade on the testnet, fake money)
     bot reconcile [--set-baseline --operator NAME --reason "..."]   (testnet ledger vs account; places nothing)
+    bot testnet start | run | status | resume | block     (H2b on the testnet: real orders, fake money)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
     bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b)
@@ -223,13 +224,19 @@ def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=N
     from bot.exchange.credentials import CredentialsError, load_credentials
     from bot.exchange.trading import BinanceTrader, OrderStatusUnknown
     from bot.execution import entry, roundtrip
+    from bot.execution.account import ACCOUNT_FILE
     from bot.execution.ledger import Ledger, LedgerError
+    from bot.execution.runner import record_entry
     from bot.market.data import MarketDataService, MarketDataUnavailable
     from bot.risk.models import AccountState, Mode, TradeIntent
 
     out = out or sys.stdout
     cfg = load_config(args.config)
     journal_dir = Path(os.path.expanduser(args.journal_dir))
+    if (journal_dir / ACCOUNT_FILE).exists():
+        print(f"Error: the testnet runner's account is started in {journal_dir}; a round trip would mix with its "
+              f"trades. The Stage 5 gate is already met.", file=sys.stderr)
+        return 2
     load_creds = load_creds or (lambda: load_credentials(prefix="BINANCE_TESTNET"))
     out.write("Binance TESTNET round trip (fake money; testnet.binance.vision)\n")
     try:
@@ -277,7 +284,7 @@ def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=N
         out.write(f"  Entry .......... OUTCOME UNKNOWN: {e}\n  The trade stays PENDING in the ledger; run "
                   f"bot reconcile to settle it before anything else.\n")
         return 3
-    _ledger_entry(book, outcome, intent_id.hex, rules.base_asset)
+    record_entry(book, outcome, intent_id.hex, rules.base_asset, time.time())
     p = outcome.plan
     out.write(f"  Risk engine .... {'accepted' if outcome.decision.accepted else 'REJECTED'}: {outcome.decision.reason}\n")
     if p is not None:
@@ -327,23 +334,6 @@ def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=N
     return 0 if rt.clean else 1
 
 
-def _ledger_entry(book, outcome, intent_id: str, base_asset: str) -> None:
-    """Record what the entry did. PENDING becomes OPEN (coins held), CLOSED (sold again) or NOT_OPENED."""
-    from bot.execution import entry
-    from bot.execution.ledger import CLOSED, NOT_OPENED, OPEN
-
-    iid, now = intent_id, time.time()
-    held = outcome.received_qty or (entry.received_qty(outcome.entry, base_asset) if outcome.entry else 0)
-    if outcome.status in (entry.PROTECTED, entry.UNPROTECTED):
-        book.mark(iid, OPEN, now, received_qty=held, note=outcome.status)
-    elif outcome.status == entry.EMERGENCY_EXIT:
-        book.mark(iid, CLOSED, now, received_qty=held, left_qty=held - outcome.exit.executed_qty,
-                  note="emergency exit")
-    else:
-        book.mark(iid, NOT_OPENED, now, note=f"{outcome.status}: {outcome.reason}"[:200])
-    book.save()
-
-
 def _ledger_close(book, rt) -> None:
     """CLOSED once the closing sale (or a protective order) filled; otherwise the trade stays OPEN."""
     from bot.execution.ledger import CLOSED
@@ -364,8 +354,8 @@ def _tolerances(reader, assets) -> dict:
     return {r.base_asset: max(r.step_size, r.market_step_size or D(0)) for r in rules.values()}
 
 
-def _reconcile(book, trader, reader, out, label: str):
-    """Reconcile, record the certain updates, and print what was found."""
+def _reconcile(book, trader, reader, out, label: str, record: bool = True):
+    """Reconcile, record the certain updates (unless `record` is False), and print what was found."""
     from bot.exchange.binance import ExchangeError
     from bot.execution import reconcile
 
@@ -376,14 +366,15 @@ def _reconcile(book, trader, reader, out, label: str):
         rec = reconcile.Reconciliation(errors=[f"could not read the exchange rules: {e}"])
     else:
         rec = reconcile.reconcile(book, trader, tol, time.time())
-        reconcile.apply(book, rec, time.time())
+        if record:
+            reconcile.apply(book, rec, time.time())
     out.write(f"  {label + ' check':.<16} reconciliation {'CLEAN' if rec.clean else 'NOT CLEAN'}\n")
     for kind, items in (("UNPROTECTED", rec.unprotected), ("Mismatch", rec.mismatches),
                         ("Waiting", rec.unsettled), ("Error", rec.errors)):
         for i in items:
             out.write(f"    {kind}: {i}\n")
     for u in rec.updates:
-        out.write(f"    Recorded: trade {u.intent_id[:8]} is now {u.status} ({u.note})\n")
+        out.write(f"    {'Recorded' if record else 'Found'}: trade {u.intent_id[:8]} is now {u.status} ({u.note})\n")
     return rec
 
 
@@ -409,6 +400,9 @@ def _reconcile_cmd(args: argparse.Namespace, make_trader=None, make_reader=None,
     trader = (make_trader or BinanceTrader)(environment="testnet", credentials=creds)
     reader = (make_reader or BinanceReadOnly)(environment="testnet")
     if args.set_baseline:
+        if _runner_active(journal_dir):
+            print("Error: the testnet runner is running; stop it before recording a baseline", file=sys.stderr)
+            return 2
         if not args.operator or not args.reason:
             print("Error: --set-baseline needs --operator and --reason", file=sys.stderr)
             return 2
@@ -431,7 +425,11 @@ def _reconcile_cmd(args: argparse.Namespace, make_trader=None, make_reader=None,
     if not book.baseline:
         print("Error: no baseline yet: bot reconcile --set-baseline --operator NAME --reason \"...\"", file=sys.stderr)
         return 2
-    rec = _reconcile(book, trader, reader, out, "Account")
+    running = _runner_active(journal_dir)
+    rec = _reconcile(book, trader, reader, out, "Account", record=not running)
+    if running:
+        out.write("  Note ........... the testnet runner is running: it records what reconciliation finds; "
+                  "this check only reports\n")
     for c in rec.checked:
         out.write(f"    OK: {c}\n")
     active = book.active()
@@ -441,6 +439,137 @@ def _reconcile_cmd(args: argparse.Namespace, make_trader=None, make_reader=None,
     if rec.unprotected:
         return 3
     return 0 if rec.clean else 1
+
+
+def _testnet_start(args: argparse.Namespace, make_trader=None, make_reader=None, load_creds=None, out=None) -> int:
+    """Start the testnet runner's account once: a capped capital, with nothing open and reconciliation clean."""
+    from bot.exchange.binance import BinanceReadOnly, ExchangeError
+    from bot.exchange.credentials import CredentialsError, load_credentials
+    from bot.exchange.trading import BinanceTrader
+    from bot.execution.account import AccountError, TradingAccount
+    from bot.execution.ledger import Ledger, LedgerError
+
+    out = out or sys.stdout
+    cfg = load_config(args.config)
+    state_dir = Path(os.path.expanduser(args.state_dir))
+    load_creds = load_creds or (lambda: load_credentials(prefix="BINANCE_TESTNET"))
+    out.write(f"Testnet runner account in {state_dir} (fake money; testnet.binance.vision)\n")
+    try:
+        creds = load_creds()
+        book = Ledger.load(state_dir, "testnet")
+        trader = (make_trader or BinanceTrader)(environment="testnet", credentials=creds)
+        reader = (make_reader or BinanceReadOnly)(environment="testnet")
+        rec = _reconcile(book, trader, reader, out, "Before start")
+        if not rec.clean:
+            out.write("Result: NOT started: reconciliation must be clean first (bot reconcile).\n")
+            return 2
+        info = trader.account()
+        totals = {b.asset: b.total for b in info.balances}
+        free = next((b.free for b in info.balances if b.asset == "USDT"), D(0))
+        acct = TradingAccount.begin(state_dir, cfg, book, totals, free, D(args.capital), args.operator, time.time())
+    except (CredentialsError, LedgerError, AccountError, ExchangeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    out.write(f"  Capital ........ {acct.capital:,.2f} USDT of testnet money (the account holds {free:,.2f} free)\n")
+    out.write(f"  Watched ........ {', '.join(f'{a} {plain(q)}' for a, q in acct.start.items())} at the start\n")
+    out.write(f"Result: STARTED by {acct.started_by}. Entries stay blocked until: bot testnet resume\n")
+    return 0
+
+
+def _testnet_run(args: argparse.Namespace, make_trader=None, make_reader=None, make_live=None, load_creds=None,
+                 out=None) -> int:
+    """The testnet runner (the bot-testnet service): H2b with the forward test's frozen settings and coins."""
+    from bot import forward
+    from bot.exchange.binance import BinanceReadOnly
+    from bot.exchange.credentials import CredentialsError, load_credentials
+    from bot.exchange.trading import BinanceTrader
+    from bot.execution.account import AccountError, TradingAccount
+    from bot.execution.ledger import Ledger, LedgerError
+    from bot.execution.runner import RunnerError, TestnetRunner
+    from bot.market.data import MarketDataService
+    from bot.paper.runner import RunnerLock, RunnerLocked
+
+    base = load_config(args.config)
+    if base.live_trading:
+        print("Error: the testnet runner never runs with live_trading on", file=sys.stderr)
+        return 2
+    state_dir = Path(os.path.expanduser(args.state_dir))
+    load_creds = load_creds or (lambda: load_credentials(prefix="BINANCE_TESTNET"))
+    try:
+        ft = forward.load(Path(os.path.expanduser(args.forward_dir)))
+        forward.check_unchanged(ft, base)
+        cfg = _forward_cfg(base, ft.symbols)
+        creds = load_creds()
+        trader = (make_trader or BinanceTrader)(environment="testnet", credentials=creds)
+        testnet = MarketDataService((make_reader or BinanceReadOnly)(environment="testnet"), cfg)
+        live = MarketDataService((make_live or BinanceReadOnly)(environment="live"), cfg)
+        with RunnerLock(state_dir):
+            now = time.time()
+            runner = TestnetRunner(state_dir, cfg, trader, testnet, live, [forward.make_strategy(ft)],
+                                   dict(ft.corr_groups), Ledger.load(state_dir, "testnet"),
+                                   TradingAccount.load(state_dir, cfg, now), out=out or sys.stdout)
+
+            def stop(signum, frame):
+                runner.stop_requested = True
+
+            old = {s: signal.signal(s, stop) for s in (signal.SIGTERM, signal.SIGINT)}
+            try:
+                runner.run(interval_s=args.interval, max_ticks=args.ticks)
+            finally:
+                for s, h in old.items():
+                    signal.signal(s, h)
+    except (forward.ForwardError, CredentialsError, LedgerError, AccountError, RunnerError, RunnerLocked) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _testnet_status(args: argparse.Namespace, out=None) -> int:
+    """What the testnet runner is doing, from its files (no network)."""
+    import json
+
+    from bot.execution.account import ACCOUNT_FILE
+    from bot.execution.ledger import CLOSED, NOT_OPENED, OPEN, PENDING, Ledger, LedgerError
+    from bot.execution.runner import JOURNAL_FILE
+
+    out = out or sys.stdout
+    state_dir = Path(os.path.expanduser(args.state_dir))
+    path = state_dir / ACCOUNT_FILE
+    if not path.exists():
+        print(f"No testnet runner account in {state_dir} yet: bot testnet start --operator NAME", file=sys.stderr)
+        return 2
+    try:
+        acct = json.loads(path.read_text())
+        book = Ledger.load(state_dir, "testnet")
+    except (ValueError, OSError, LedgerError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    last = None
+    journal = state_dir / JOURNAL_FILE
+    if journal.exists():
+        for line in journal.read_text().splitlines():
+            if '"event": "status"' in line:
+                last = json.loads(line)
+    out.write(f"Testnet runner in {state_dir} (fake money; testnet.binance.vision)\n")
+    out.write(f"Runner: {'running' if _runner_active(state_dir) else 'NOT running'}; started by {acct['started_by']} "
+              f"on {time.strftime('%Y-%m-%d', time.gmtime(acct['started_at']))}\n")
+    out.write(f"Mode: {acct['modes']['mode']}" + (f" (active: {', '.join(acct['modes']['active_breaches'])})"
+                                                   if acct['modes']['active_breaches'] else "") + "\n")
+    capital = D(acct["capital"])
+    if last:
+        eq = D(last["equity"])
+        out.write(f"Equity {fmt(eq)} USDT (capital {fmt(capital)}, {fmt(eq - capital)}), drawdown "
+                  f"{fmt(D(last['drawdown_pct']))}%; as of {time.strftime('%Y-%m-%d %H:%M', time.gmtime(last['at']))} UTC\n")
+    else:
+        out.write(f"Capital {fmt(capital)} USDT; no equity mark yet\n")
+    trades = list(book.trades.values())
+    by = {k: [t for t in trades if t.status == k] for k in (PENDING, OPEN, CLOSED, NOT_OPENED)}
+    out.write(f"Trades: {len(by[OPEN])} open, {len(by[PENDING])} pending, {len(by[CLOSED])} closed, "
+              f"{len(by[NOT_OPENED])} not opened\n")
+    for t in by[OPEN] + by[PENDING]:
+        out.write(f"  {t.status:<8} {t.symbol} {plain(t.received_qty)} bought {fmt(t.entry_price)}, stop "
+                  f"{fmt(t.stop_price)}, take-profit {fmt(t.take_profit_price)} ({t.strategy or '?'})\n")
+    return 0
 
 
 DEFAULT_PAPER_DIR = "~/paper"
@@ -1033,6 +1162,23 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("--equity", default="1000", help="testnet USDT the risk engine sizes the trade on")
     tr.add_argument("--hold", type=float, default=10.0, help="seconds to hold before closing")
     tr.add_argument("--journal-dir", default=DEFAULT_TESTNET_DIR)
+    tn = sub.add_parser("testnet", help="the testnet runner: H2b placing real orders on the testnet (fake money)")
+    tsub = tn.add_subparsers(dest="testnet_cmd", required=True)
+    ts = tsub.add_parser("start", help="once: start the runner's account with a capped capital")
+    ts.add_argument("--operator", required=True)
+    ts.add_argument("--capital", default="1000", help="testnet USDT the bot trades with")
+    trn = tsub.add_parser("run", help="run until stopped (used by the bot-testnet service)")
+    trn.add_argument("--interval", type=float, default=60.0, help="seconds between rounds")
+    trn.add_argument("--ticks", type=int, default=None, help=argparse.SUPPRESS)
+    trn.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
+    tsub.add_parser("status", help="mode, equity, open trades (from the runner's files)")
+    for name, help_ in (("resume", "allow new entries (refused while a breaker or fault is active)"),
+                        ("block", "block new entries; exits keep working")):
+        q = tsub.add_parser(name, help=help_)
+        q.add_argument("--operator", required=True)
+        q.add_argument("--reason", required=True, help="10+ characters")
+    for q in tsub.choices.values():
+        q.add_argument("--state-dir", default=DEFAULT_TESTNET_DIR, help="ledger and account folder")
     rc = sub.add_parser("reconcile", help="compare the testnet ledger with the testnet account (places nothing)")
     rc.add_argument("--journal-dir", default=DEFAULT_TESTNET_DIR)
     rc.add_argument("--set-baseline", action="store_true",
@@ -1115,6 +1261,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "forward":
             return {"start": _forward_start, "run": _forward_run, "status": _forward_status, "report": _forward_report,
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
+        if args.cmd == "testnet":
+            return {"start": _testnet_start, "run": _testnet_run, "status": _testnet_status,
+                    "resume": _paper_request("resume"), "block": _paper_request("block")}[args.testnet_cmd](args)
         if args.cmd == "paper":
             return {"run": _paper_run, "status": _paper_status, "resume": _paper_request("resume"),
                     "block": _paper_request("block"), "trade": _paper_request("trade")}[args.paper_cmd](args)
