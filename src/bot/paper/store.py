@@ -103,10 +103,12 @@ def _record(cls: type, raw: dict[str, Any]) -> Any:
 
 
 def from_dict(data: dict[str, Any], cfg: AppConfig, market: SpotReadVenue,
-              clock: Callable[[], float]) -> SimExchange:
+              clock: Callable[[], float], **sim_kw: Any) -> SimExchange:
+    """`sim_kw` (for example the forward test's correlation groups) are settings, not state."""
     if data.get("version") != FORMAT_VERSION:
         raise StateError(f"state file format {data.get('version')!r} is not {FORMAT_VERSION}")
-    sim = SimExchange(cfg, market, clock=clock, starting_quote=D(data["starting_quote"]), fee_rate=D(data["fee_rate"]))
+    sim = SimExchange(cfg, market, clock=clock, starting_quote=D(data["starting_quote"]), fee_rate=D(data["fee_rate"]),
+                      **sim_kw)
     sim.quote = D(data["quote"])
     sim.created_at = float(data["created_at"])
     positions = [_record(SimPosition, p) for p in data["positions"]]
@@ -149,15 +151,15 @@ def _check(sim: SimExchange) -> None:
 
 
 def load_or_create(path: Path, cfg: AppConfig, market: SpotReadVenue,
-                   clock: Callable[[], float]) -> tuple[SimExchange, bool]:
+                   clock: Callable[[], float], **sim_kw: Any) -> tuple[SimExchange, bool]:
     """Returns (simulator, restored). A missing file starts a new 10,000 USDT account;
     an unreadable one raises StateError."""
     path = Path(path)
     if not path.exists():
-        return SimExchange(cfg, market, clock=clock), False
+        return SimExchange(cfg, market, clock=clock, **sim_kw), False
     try:
         data = json.loads(path.read_text())
-        sim = from_dict(data, cfg, market, clock)
+        sim = from_dict(data, cfg, market, clock, **sim_kw)
     except StateError:
         raise
     except Exception as e:

@@ -89,6 +89,7 @@ class PaperRunner:
     clock: Callable[[], float] = time.time
     strategies: list[Strategy] = field(default_factory=list)
     out: TextIO | None = None                     # readable log lines (stdout for the service)
+    manual_trades: bool = True                    # False in a forward test: only the strategy trades
     status_every_s: float = 900
     _data_down_since: float | None = field(default=None, init=False)
     _last_status: float = field(default=0.0, init=False)
@@ -109,10 +110,11 @@ class PaperRunner:
         self._seen_breaches = frozenset(self.sim.modes.active_breaches)
 
     @classmethod
-    def open(cls, state_dir: Path, cfg, market, clock: Callable[[], float] = time.time, **kw) -> "PaperRunner":
+    def open(cls, state_dir: Path, cfg, market, clock: Callable[[], float] = time.time,
+             sim_kw: dict[str, Any] | None = None, **kw) -> "PaperRunner":
         state_dir = Path(state_dir)
         state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        sim, restored = store.load_or_create(state_dir / STATE_FILE, cfg, market, clock)
+        sim, restored = store.load_or_create(state_dir / STATE_FILE, cfg, market, clock, **(sim_kw or {}))
         runner = cls(sim, state_dir, clock, **kw)
         runner.log("started", restored=restored, equity=_safe_equity(sim), cash=sim.quote,
                    positions=sorted(sim.positions), mode=sim.modes.mode.value,
@@ -254,6 +256,9 @@ class PaperRunner:
                         self.log("resume_refused", operator=r.get("operator"), reason=str(e))
                 elif kind == "block":
                     self.sim.modes.block_entries(str(r["operator"]), str(r["reason"]), as_utc(now))
+                elif kind == "trade" and not self.manual_trades:
+                    self.log("request_refused", file=path.name, operator=r.get("operator"),
+                             reason="manual trades are not allowed in this account (forward test: only the strategy trades)")
                 elif kind == "trade":
                     self._submit(intent_from_request(r), now, source=f"operator:{r.get('operator', '?')}")
                 else:

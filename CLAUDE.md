@@ -93,7 +93,10 @@ bot paper status
    lock is stricter: any earlier opening, by any strategy, makes every later run VOID. H2b passed the
    walk-forward check (23 Oct 2026; 104 trades, +1.90 USDT per trade with doubled costs). The paper runner
    asks strategies once per finished candle and applies their exits to their own positions only
-   (`strategy-clock.json`). Next: the forward-test mode (plan section 5, item 4).
+   (`strategy-clock.json`). The forward test is `bot.forward` + `bot forward start|run|status|resume|block`
+   (service `bot-forward`, account `~/forward-h2b`): only Sultan starts it; never edit `forward.json`, never
+   change `h2b_blend.py` or `strategies/base.py` while it runs (the runner refuses: a change restarts the test).
+   Next: the end-of-test report with the plan's 6 checks.
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
 6. Loss-review loop, dashboard (FastAPI, not public), Telegram alerts
 7. News + LLM, advisory/veto only
