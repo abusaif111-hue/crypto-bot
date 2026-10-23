@@ -19,7 +19,7 @@ from typing import Any, Callable
 from bot.core.config import AppConfig
 from bot.core.money import D
 from bot.exchange.filters import SymbolRules
-from bot.exchange.interface import Book, Candle, SpotReadVenue
+from bot.exchange.interface import INTERVAL_MS, KLINES_PAGE, Book, Candle, SpotReadVenue
 from bot.risk.models import MarketSnapshot
 
 
@@ -78,9 +78,30 @@ class MarketDataService:
 
     def closed_candles(self, symbol: str, interval: str, start_ms: int | None = None,
                        end_ms: int | None = None, limit: int = 500) -> list[Candle]:
-        """Only finished candles: a candle still forming must never feed a decision (no look-ahead)."""
-        candles = _fetch("candles", lambda: self.venue.klines(symbol, interval, start_ms, end_ms, limit))
+        """Only finished candles: a candle still forming must never feed a decision (no look-ahead).
+        More than Binance's 1,000 per request are fetched page by page, oldest first."""
+        if limit <= KLINES_PAGE:
+            candles = _fetch("candles", lambda: self.venue.klines(symbol, interval, start_ms, end_ms, limit))
+        else:
+            candles = _fetch("candles", lambda: self._paged(symbol, interval, start_ms, end_ms, limit))
         return [c for c in candles if c.closed]
+
+    def _paged(self, symbol: str, interval: str, start_ms: int | None, end_ms: int | None,
+               limit: int) -> list[Candle]:
+        step = INTERVAL_MS[interval]
+        until = end_ms if end_ms is not None else int(self.clock() * 1000)
+        cursor = start_ms if start_ms is not None else until - (limit + 6) * step   # a few spare for gaps
+        out: list[Candle] = []
+        for _ in range(limit // KLINES_PAGE + 3):
+            page = self.venue.klines(symbol, interval, cursor, end_ms, KLINES_PAGE)
+            new = [c for c in page if c.open_time >= cursor and (not out or c.open_time > out[-1].open_time)]
+            if not new:
+                break
+            out += new
+            cursor = new[-1].open_time + step
+            if len(page) < KLINES_PAGE:
+                break
+        return out[-limit:] if start_ms is None else out[:limit]
 
 
 def _fetch(what: str, fetch: Callable[[], Any]) -> Any:

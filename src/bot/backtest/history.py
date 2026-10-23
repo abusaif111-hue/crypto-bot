@@ -29,11 +29,9 @@ from typing import Any
 from bot.backtest.periods import HOLDOUT_END_MS, WARMUP_START_MS, HoldoutLocked, HoldoutTicket, research_only
 from bot.core.money import D
 from bot.exchange.filters import SymbolRules, parse_symbol
-from bot.exchange.interface import Candle, SpotReadVenue
+from bot.exchange.interface import INTERVAL_MS, KLINES_PAGE as PAGE, Candle, SpotReadVenue
 
-INTERVAL_MS = {"1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
 FIELDS = ("open_time", "open", "high", "low", "close", "volume", "close_time", "quote_volume")
-PAGE = 1000                       # Binance's maximum klines per request
 
 
 class DataError(RuntimeError):

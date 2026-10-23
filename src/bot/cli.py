@@ -4,7 +4,7 @@
     bot try-trade --equity 10000 --entry 80000 --stop 78000 --target 86000 [--symbol BTCUSDT]
     bot check-binance [--public-only] [--details]
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
-    bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3)
+    bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b)
     bot backtest holdout                                  (the one-time holdout test; Sultan only)
 
 `try-trade` runs a proposed trade through the real risk engine with example
@@ -375,19 +375,22 @@ def _backtest_baselines(args: argparse.Namespace, out=None) -> int:
     return 0
 
 
-STRATEGIES = ("H1", "H2", "H3")
+STRATEGIES = ("H1", "H2", "H3", "H2b")
+HOLDOUT_STRATEGIES = ("H1", "H2", "H3")      # H2b was designed after the holdout was seen (docs/h2b-plan.md)
 
 
 def _make_strategy(name: str, symbols: list[str]):
     from bot.strategies.h1_trend import TrendBreakout
     from bot.strategies.h2_momentum import TimeSeriesMomentum
+    from bot.strategies.h2b_blend import BlendedMomentum
     from bot.strategies.h3_mean_reversion import RangeMeanReversion
 
-    return {"H1": TrendBreakout, "H2": TimeSeriesMomentum, "H3": RangeMeanReversion}[name](symbols)
+    return {"H1": TrendBreakout, "H2": TimeSeriesMomentum, "H3": RangeMeanReversion,
+            "H2b": BlendedMomentum}[name](symbols)
 
 
 def _backtest_run(args: argparse.Namespace, out=None) -> int:
-    """Walk-forward and robustness tests of H1-H3 on the research period. The holdout stays locked."""
+    """Walk-forward and robustness tests of H1-H3 and H2b on the research period. The holdout stays locked."""
     from bot.backtest import history, report, selection
 
     data_dir = Path(os.path.expanduser(args.data_dir))
@@ -416,8 +419,10 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
         meta["universe"] = desc
     verdicts = []
     for name in args.strategy:
-        say(f"{name}: starting (27 setting combinations x 8 windows, then robustness checks)")
-        ev = selection.evaluate(_make_strategy(name, symbols), candles, rules, cfg, cost,
+        strategy = _make_strategy(name, symbols)
+        say(f"{name}: starting ({3 ** len(strategy.params())} setting combinations x 8 windows, "
+            f"then robustness checks)")
+        ev = selection.evaluate(strategy, candles, rules, cfg, cost,
                                 random_runs=args.random_runs, progress=say, corr_groups=corr_groups)
         text = selection.render(ev, meta, cfg)
         folder = report.write_files(Path(os.path.expanduser(args.reports_dir)), f"strategy-{name}", text,
@@ -441,6 +446,8 @@ def _backtest_holdout(args: argparse.Namespace, out=None) -> int:
     data_dir = Path(os.path.expanduser(args.data_dir))
     reports_dir = Path(os.path.expanduser(args.reports_dir))
     try:
+        if args.strategy not in HOLDOUT_STRATEGIES:
+            raise HoldoutLocked(f"{args.strategy} never runs on the holdout (docs/h2b-plan.md)")
         if args.confirm != holdout.CONFIRM_PHRASE:
             raise HoldoutLocked(f'type --confirm "{holdout.CONFIRM_PHRASE}" exactly to open the holdout')
         if not args.operator.strip():
@@ -532,14 +539,14 @@ def main(argv: list[str] | None = None) -> int:
     bb = bsub.add_parser("baselines", help="cash, buy-and-hold, 50/50 and random entries on the research period")
     bb.add_argument("--seeds", type=int, default=200, help="number of random-entry runs")
     bb.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
-    br = bsub.add_parser("run", help="walk-forward and robustness tests of strategies H1-H3 (research period)")
+    br = bsub.add_parser("run", help="walk-forward and robustness tests of strategies H1-H3, H2b (research period)")
     br.add_argument("--strategy", nargs="+", choices=STRATEGIES, default=list(STRATEGIES))
     br.add_argument("--random-runs", type=int, default=50, help="random-entry runs with the same exits")
     br.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     br.add_argument("--screened", action="store_true",
                     help="use the coins and correlation groups picked by bot backtest screen")
     bh = bsub.add_parser("holdout", help="the one-time holdout test (Sultan only; recorded; a second run is VOID)")
-    bh.add_argument("--strategy", required=True, choices=STRATEGIES)
+    bh.add_argument("--strategy", required=True, choices=HOLDOUT_STRATEGIES)
     bh.add_argument("--operator", required=True)
     bh.add_argument("--confirm", required=True, help="the exact confirmation phrase")
     bh.add_argument("--screened", action="store_true", help="the coins and groups picked by bot backtest screen")

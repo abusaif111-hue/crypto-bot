@@ -132,3 +132,14 @@ def zscore(values: Sequence[Decimal], n: int) -> Series:
 def _check(n: int, minimum: int = 1) -> None:
     if not isinstance(n, int) or n < minimum:
         raise ValueError(f"window must be a whole number of at least {minimum}")
+
+
+def percentile(values: Sequence[Decimal], q: Decimal) -> Decimal:
+    """Linear-interpolated percentile, q in [0, 1]."""
+    if not values:
+        raise ValueError("no values")
+    v = sorted(values)
+    pos = (len(v) - 1) * D(q)
+    lo = int(pos)
+    hi = min(lo + 1, len(v) - 1)
+    return v[lo] + (v[hi] - v[lo]) * (pos - lo)

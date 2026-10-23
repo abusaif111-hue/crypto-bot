@@ -214,6 +214,26 @@ Rules fixed before any holdout result (approved by Sultan):
   strategy is marked VOID and cannot qualify. A failure rejects the strategy: no adjusting
   and re-running.
 
+Result (23 Oct 2026): **H2 failed the holdout** (27 trades, −2.16 USDT per trade, −4.05 with
+doubled costs) and is rejected. The holdout year is spent; no strategy can be judged on it again.
+
+### After the holdout: H2b (plan approved by Sultan)
+
+H2b is a new strategy, defined and frozen in [`docs/h2b-plan.md`](docs/h2b-plan.md):
+the 14-, 28- and 56-day returns must agree (2 of 3), with no new entries while a coin's
+30-day volatility is in the top fifth of its past year. Only 2 tunable settings. It never
+runs on the holdout (`bot backtest holdout` refuses it).
+
+Step B of the plan, the sanity check on the research period (same walk-forward, same 7 checks).
+It takes longer than H2: about 1.5 to 2 times as long on the same server.
+
+```bash
+bot backtest run --strategy H2b --screened
+```
+
+If H2b fails any check, it is dropped; nothing is tuned and re-run. If it passes, the real
+test is the forward test on new prices (later modules).
+
 ## How a trade is sized
 
 1. Entry is assumed to fill slightly worse than planned (0.05%), and the stop
@@ -288,6 +308,12 @@ bot; `resume(operator, reason)` allows them.
 - Paper runner: saving and restoring keep every balance, position, trade and breaker; a
   restart blocks entries and cannot clear a breaker; corrupt files stop the runner;
   requests, price outages, broken strategies, a second runner and a clean stop are covered.
+- H2b: every fixed value matches the frozen plan; the 2-of-3 rule, the volatility pause (today
+  against the 365 days before, at exactly the 80th percentile), the exits and the history
+  requirement have worked examples; future prices never change past decisions; the holdout
+  command refuses it. Each of these was checked by planting a bug and seeing the test fail.
+- Candle history longer than Binance's 1,000 per request is fetched page by page, and a failed
+  page fails closed.
 
 ## Settings you may want to change
 
@@ -300,7 +326,9 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
 
 ## Next modules
 
-4. Backtesting: strategies H1-H3, walk-forward and robustness (step 2), then the holdout (step 3)
+4. H2b (`docs/h2b-plan.md`): the strategy and paged candle history are done; next the stricter
+   holdout lock, strategy exits in the paper runner (it must also ask strategies once per finished
+   candle, not every 5-second tick), and the forward-test mode
 5. Order execution with protection checks and reconciliation
 6. Dashboard and Telegram alerts
 7. News and AI analysis (advisory only)

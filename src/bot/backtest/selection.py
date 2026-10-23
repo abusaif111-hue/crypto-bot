@@ -22,10 +22,10 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from bot.analysis.indicators import realized_vol, sma
+from bot.analysis.indicators import percentile, realized_vol, sma
 from bot.analysis.resample import DAY_MS, daily
 from bot.backtest.engine import run
-from bot.backtest.metrics import Metrics, percentile
+from bot.backtest.metrics import Metrics
 from bot.backtest.periods import RESEARCH_START_MS
 from bot.backtest.replay import CostModel
 from bot.backtest.walkforward import Window, WindowResult, metrics_of, one_at_a_time, walk_forward

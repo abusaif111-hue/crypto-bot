@@ -93,3 +93,46 @@ def test_works_on_the_real_read_only_adapter():
     assert snap.reference_price == Dec("82010.11") and snap.quote_volume_24h > 0 and snap.ask_depth_quote > 0
     assert ("/api/v3/avgPrice", False, {"symbol": "BTCUSDT"}) in client.calls
     assert all(signed is False for _, signed, _ in client.calls)   # market data never needs the key
+
+
+class PagedVenue(FakeMarket):
+    """Klines as Binance serves them: at most 1,000 per request, counted forward from startTime."""
+    def __init__(self, candles, fail_on_call=None):
+        super().__init__()
+        self.candles, self.requests, self.fail_on_call = candles, [], fail_on_call
+
+    def klines(self, symbol, interval, start_ms=None, end_ms=None, limit=500):
+        self.requests.append((start_ms, limit))
+        if limit > 1000:
+            raise ValueError("Binance refuses more than 1000 klines per request")
+        if self.fail_on_call == len(self.requests):
+            raise ConnectionError("timeout")
+        cs = [c for c in self.candles if (start_ms is None or c.open_time >= start_ms)
+              and (end_ms is None or c.open_time <= end_ms)]
+        return cs[:limit] if start_ms is not None else cs[-limit:]
+
+
+def hourly(n, now_ms):
+    from tests.backtest_data import walk
+    cs = walk(now_ms - n * 3_600_000, n, step_ms=3_600_000)
+    last = cs[-1]
+    return cs[:-1] + [Candle(**{**last.__dict__, "closed": False})]      # the newest is still forming
+
+
+def test_long_histories_are_fetched_page_by_page():
+    clock = Clock()
+    cs = hourly(3000, int(clock() * 1000))
+    v = PagedVenue(cs)
+    got = MarketDataService(v, AppConfig(), clock).closed_candles("BTCUSDT", "1h", limit=2400)
+    assert len(v.requests) >= 3 and all(lim == 1000 for _, lim in v.requests)
+    assert got == [c for c in cs[-2400:] if c.closed]                # the newest 2,400, in order, no repeats
+    v.requests.clear()
+    assert MarketDataService(v, AppConfig(), clock).closed_candles("BTCUSDT", "1h", limit=500) == cs[-500:-1]
+    assert v.requests == [(None, 500)]                                # short histories: one request, as before
+
+
+def test_a_failed_page_fails_closed():
+    clock = Clock()
+    v = PagedVenue(hourly(3000, int(clock() * 1000)), fail_on_call=2)
+    with pytest.raises(MarketDataUnavailable):
+        MarketDataService(v, AppConfig(), clock).closed_candles("BTCUSDT", "1h", limit=2400)

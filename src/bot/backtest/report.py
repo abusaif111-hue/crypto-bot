@@ -18,7 +18,8 @@ from typing import Any
 
 from bot.backtest import benchmarks
 from bot.backtest.engine import BacktestResult, run
-from bot.backtest.metrics import Metrics, compute, percentile
+from bot.analysis.indicators import percentile
+from bot.backtest.metrics import Metrics, compute
 from bot.backtest.periods import HOLDOUT_START_MS, RESEARCH_START_MS
 from bot.backtest.replay import CostModel
 from bot.core.config import AppConfig
