@@ -483,6 +483,24 @@ and never blocks or resumes anything (the runners still stop new entries on thei
 guarantee: a price can gap through a stop, a stop can fill worse than its price, and stops depend on
 Binance being up.
 
+## Market observations (`bot market`, read-only)
+
+For each coin the forward test trades (BTC, ETH, XRP, BNB), from finished daily candles:
+
+- **Price:** the last daily close and its change over 1 and 7 days.
+- **Trend:** above or below its 50-day average, by how much, and whether that average is rising.
+- **Regime:** the same rule the backtests use (bull, bear or sideways, from the 200-day average and its
+  20-day slope).
+- **Volatility:** the 30-day volatility, and what share of the past year it is higher than.
+- **Volume and spread:** the last day's volume against its 30-day average, and the current spread.
+- **Breadth:** how many of the coins are above their 50-day average.
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot market               # as the bot user
+```
+
+These are observations, not forecasts. Short or missing history is shown as such, never filled in.
+
 ## Dashboard (private, read-only)
 
 `bot dashboard` (service `bot-dashboard`) shows every account on one page: the live account, the
