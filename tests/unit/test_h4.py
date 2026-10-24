@@ -362,6 +362,13 @@ def test_the_run_uses_the_recorded_coins_and_1h_candles(tmp_path, monkeypatch, c
     assert sorted(seen["candles"]) == SYMS and seen["cfg"].universe == SYMS and seen["groups"] is None
     c = seen["candles"]["BTCUSDT"]
     assert c[1].open_time - c[0].open_time == HOUR
+    order = []
+    real_load = history.load
+    monkeypatch.setattr(history, "load", lambda *a: order.append("load") or real_load(*a))
+    monkeypatch.setattr(universe, "available_memory_mb", lambda: order.append("memory") or 1000)
+    with pytest.raises(RuntimeError, match="stop here"):
+        cli._backtest_run(args, out=io.StringIO())
+    assert order[0] == "memory" and "load" in order          # free memory is read before any candle is loaded
     monkeypatch.setattr(universe, "available_memory_mb", lambda: 150 + 29)
     assert cli._backtest_run(args, out=io.StringIO()) == 2               # the measured peak plus the margin
     assert "150 MB" in capsys.readouterr().err
