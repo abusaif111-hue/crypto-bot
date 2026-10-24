@@ -101,6 +101,8 @@ bot paper status
    `history.load_with_forward`, the only place candles from the spent holdout year may be read, as indicator
    history before the forward start; nothing there is traded or measured (enforced by tests). Do not change
    the report's checks after the forward test has started.
+   H4 (`docs/h4-plan.md`, hourly pullbacks) is a DRAFT plan awaiting Sultan's decisions: build nothing for
+   H4 until he approves it, and never touch H2b's forward test for it.
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
    (5a done: `bot.exchange.trading.BinanceTrader`, testnet only, 7 allow-listed endpoints, `bot check-trading`;
    only `bot.execution` and the CLI may import it). Never re-send an order whose outcome is unknown: Binance
