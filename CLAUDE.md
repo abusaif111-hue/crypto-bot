@@ -110,6 +110,10 @@ bot paper status
    **H4 did not qualify on walk-forward (24 Oct 2026) and is rejected:** 331 out-of-sample trades, -1.51 USDT
    per trade (-5.68 with doubled costs), no better than random entries with the same exits. Per its plan it is
    not tuned or re-run and gets no forward test; never re-test it with changed settings, coins or a regime filter.
+   Intraday research (`docs/intraday-plan.md`, approved 24 Oct 2026, frozen): I1/I2/I3 and their news-aware
+   variants on BTC 15m with 1h context, a locked final window (2024-10 to 2025-10, opened once by Sultan),
+   99th-percentile random bar, context-only baselines. Simulated money only; it must never import the order
+   path. Never edit that plan or tune a method to pass.
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
    (5a done: `bot.exchange.trading.BinanceTrader`, testnet only, 7 allow-listed endpoints, `bot check-trading`;
    only `bot.execution` and the CLI may import it). Never re-send an order whose outcome is unknown: Binance
@@ -153,6 +157,8 @@ bot paper status
    `bot signals` (`bot.signal_report`): read-only per-coin view of H2b's daily checks; the verdict is
    `BlendedMomentum.signal()` itself; it never changes `h2b_blend.py`, places orders or writes files.
 7. News + LLM, advisory/veto only
+   Planned in `docs/intel-plan.md` (approved 24 Oct 2026): official news, market observations, a read-only
+   risk monitor (may only block entries) and a daily report; none of it may import trading code.
 
 Gates before live: testnet with at least 5 clean round trips; paper trading for
 8+ weeks and 30+ closed trades with at least 5 profitable and zero rule violations.

@@ -1,7 +1,7 @@
 # Intraday research plan: trend, breakout, range and news-aware methods (15-minute signals)
 
-Status: **DRAFT, 24 Oct 2026, waiting for Sultan's decisions in section 11.** Nothing is built and no
-existing file is changed by this plan. It answers Sultan's request for a spot-only intraday strategy
+Status: **APPROVED by Sultan on 24 Oct 2026 (decisions in section 11). Frozen.** Written before any
+15-minute data was downloaded. Nothing is built yet. It answers Sultan's request for a spot-only intraday strategy
 research module. It is research with simulated money only: nothing here can place an order.
 
 Rules for this plan, as for H2b and H4: every rule and pass condition is fixed **before** any
@@ -46,7 +46,7 @@ a turnover measure, a 100 USDT budget run, and a market-exit cost choice (sectio
   existing checks (gaps, irregular candles, impossible prices).
 - **1-hour context** is built from the 15-minute candles by the same "finished period only" rule as the
   daily candles: an hour counts only once its last 15-minute candle has closed.
-- **Coins:** BTC and ETH (decision 5). One correlation group (R-08), as today.
+- **Coin:** BTC only (decision 5, chosen by Sultan to stay on the 512 MB server).
 - Shorter intervals than 15 minutes are not used: the costs in section 6 make them harder, and nothing
   in this plan needs them.
 
@@ -169,19 +169,23 @@ assumed); spreads widen in fast markets more than the model shows; survivorship 
 still exist); unscheduled news is not covered without a licensed archive; the final period is weakly
 contaminated (section 7).
 
-## 11. Sultan's decisions
+## 11. Sultan's decisions (24 Oct 2026)
 
-- [ ] 1. **Live H2b during this research:** (a) keep running (recommended: the research cannot reach it),
-      or (b) block new live entries until the research ends.
-- [ ] 2. **Market sales other than stops:** (A) keep today's full stop allowance (very pessimistic;
-      results comparable with H1 to H4), or (B) 0.05% slippage for those sales, with stops unchanged, and
-      today's model always shown as a sensitivity. B is less pessimistic than earlier tests, so their
-      results are not directly comparable.
-- [ ] 3. **Periods:** approve the training/validation split and the locked final window in section 7.
-- [ ] 4. **Raise the random-entry bar to the 99th percentile** (stricter; recommended).
-- [ ] 5. **Coins and server:** (a) resize the server to 2 GB for the research (about 12 USD a month while
-      it runs; a CPU and RAM resize can be undone, a disk resize cannot), (b) shorten the research to
-      2022 onwards on 512 MB, or (c) BTC only.
-- [ ] 6. **News:** (a) scheduled official releases only (free), or (b) also buy a licensed historical news
-      archive with original publication times (cost and licence to check).
-- [ ] 7. Approve the methods and pass rules in sections 4 and 8.
+Sultan chose decisions 1, 2 and 5 himself; for 3, 4, 6 and 7 he accepted the recommended answers.
+
+- [x] 1. **Live H2b during this research:** (a) keep running. The research cannot reach it.
+- [x] 2. **Market sales other than stops:** (B) 0.05% slippage for those sales; stops keep their full
+      allowance; today's model (full allowance on every market sale) is always shown as a sensitivity.
+      These results are less pessimistic than H1 to H4's, so they are not directly comparable.
+- [x] 3. **Periods:** the training/validation split and the locked final window in section 7.
+- [x] 4. **Random-entry bar at the 99th percentile.**
+- [x] 5. **Coins and server:** (c) BTC only, on the 512 MB server. Consequences, fixed now before any
+      data is seen:
+      - pass rule 4 checks one month only (with one coin there is no "best coin" to remove);
+      - BTC alone may give fewer than 100 validation trades for a method; if so, that method fails;
+        no coin is added afterwards;
+      - memory is measured first (as for H4). If BTC on 15m from 2019 does not fit even with Claude
+        Code stopped on the server during the run, the research stops and Sultan decides again; the
+        period is not shortened automatically.
+- [x] 6. **News:** (a) scheduled official releases only (free).
+- [x] 7. The methods and pass rules in sections 4 and 8 are approved.

@@ -1,6 +1,6 @@
 # Market intelligence, risk monitor and daily report: upgrade plan
 
-Status: **DRAFT, 24 Oct 2026, waiting for Sultan's decisions in section 10.** Nothing is built yet,
+Status: **APPROVED by Sultan on 24 Oct 2026 (decisions in section 10).** Nothing is built yet,
 and nothing in this plan changes how the bot trades. It answers Sultan's "Upgrade Specification:
 Crypto Market Intelligence and Risk Monitoring Bot".
 
@@ -253,26 +253,19 @@ fake exchanges, as today.
 - On the 512 MB server, memory is tight. The report runs as a short job, but a resize to 1 GB would
   remove the risk.
 
-## 10. Sultan's decisions
+## 10. Sultan's decisions (24 Oct 2026)
 
-- [ ] 1. **Live trading during this work.** The specification says to keep the application
-      non-executing during development and testing. Development here never touches the server, and
-      tests never trade. The live account (H2b, 300 USDT cap) runs by your earlier decision. Choose:
-      (a) keep it running (recommended: nothing in this work changes it), or (b) block new live
-      entries until this work is finished (`live block`).
-- [ ] 2. **"100 USDT a day".** The bot does not invest a fresh amount each day; it sizes each trade on
-      the account's capital (0.25% risk per trade). Choose: (a) lower the live capital from 300 to
-      100 USDT (stricter, allowed; I will give you the exact steps, which you run yourself), or (b)
-      keep 300 and use 100 USDT only as the reference amount in the report.
-- [ ] 3. **News sources.** (a) Official sources only (phase 1, free, no keys), or (b) also a licensed
-      news aggregator (cost, a new API key, licence terms to check).
-- [ ] 4. **Language-model summaries** (Claude API: a monthly cost and a new key; advisory only, never
-      trades). Yes / no / later.
-- [ ] 5. **Monitor on a critical warning:** (a) warn only (Telegram and report), or (b) also block new
-      entries on the affected account, through the runner's existing block request (stricter; open
-      trades keep their stop and target).
-- [ ] 6. **Server size:** keep 512 MB, or resize to 1 GB (about 2 USD a month more).
-- [ ] 7. Approve the plan in sections 4 to 8.
+Sultan chose decisions 1, 2 and 6 himself; for 3, 4, 5 and 7 he accepted the recommended answers.
+
+- [x] 1. **Live trading during this work:** (a) keep it running. Nothing in this work changes it.
+- [x] 2. **"100 USDT a day":** (a) lower the live capital from 300 to 100 USDT. Sultan does this himself
+      with the steps he was given (a fresh live account record with 100 USDT, only with nothing open).
+- [x] 3. **News sources:** (a) official sources only (phase 1, free, no keys).
+- [x] 4. **Language-model summaries:** later (not in this work).
+- [x] 5. **Monitor on a critical warning:** (b) also block new entries on the affected account, through
+      the runner's existing block request. Open trades keep their stop and target.
+- [x] 6. **Server size:** keep 512 MB. The report stays a short daily job.
+- [x] 7. The plan in sections 4 to 8 is approved.
 
 ## 11. Deployment and rollback (DigitalOcean)
 
