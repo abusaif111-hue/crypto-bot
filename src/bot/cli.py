@@ -9,6 +9,7 @@
     bot testnet start | run | status | resume | block     (H2b on the testnet: real orders, fake money)
     bot alerts setup | test | run                         (Telegram alerts)
     bot dashboard [--port 8050]                           (private, read-only page; open it through an SSH tunnel)
+    bot signals                                           (how close H2b is to buying each coin; read-only)
     bot live check | baseline | reconcile | start | run | status | resume | block   (REAL money; Sultan's switch)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
@@ -829,6 +830,31 @@ def _dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _signals(args: argparse.Namespace, make_exchange=None, out=None) -> int:
+    """How close H2b is to buying each coin (read-only; public live prices; changes nothing)."""
+    from bot import forward, signal_report
+    from bot.core.config import Environment
+    from bot.exchange.binance import BinanceReadOnly
+    from bot.market.data import MarketDataService
+
+    out = out or sys.stdout
+    base = load_config(args.config)
+    try:
+        ft = forward.load(Path(os.path.expanduser(args.forward_dir)))
+        strategy = forward.make_strategy(ft)
+    except forward.ForwardError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    warning = ""
+    try:
+        forward.check_unchanged(ft, base.model_copy(update={"environment": Environment.PAPER, "live_trading": False}))
+    except forward.ForwardError as e:
+        warning = f"{e} (the runners refuse to trade until this is fixed)"
+    data = MarketDataService((make_exchange or BinanceReadOnly)(environment="live"), _forward_cfg(base, ft.symbols))
+    out.write(signal_report.render(signal_report.report(strategy, data), strategy, warning))
+    return 0
+
+
 DEFAULT_PAPER_DIR = "~/paper"
 PAPER_GATE_WEEKS, PAPER_GATE_TRADES, PAPER_GATE_PROFITABLE = 8, 30, 5
 
@@ -1461,6 +1487,8 @@ def main(argv: list[str] | None = None) -> int:
     for q in lsub.choices.values():
         q.add_argument("--state-dir", default=DEFAULT_LIVE_DIR, help="live ledger and account folder")
         q.set_defaults(env="live")
+    sg = sub.add_parser("signals", help="how close H2b is to buying each coin (read-only; changes nothing)")
+    sg.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
     db = sub.add_parser("dashboard", help="private read-only dashboard on this machine (open via an SSH tunnel)")
     db.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
     db.add_argument("--host", default="127.0.0.1", help="this machine only: 127.0.0.1")
@@ -1556,6 +1584,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "forward":
             return {"start": _forward_start, "run": _forward_run, "status": _forward_status, "report": _forward_report,
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
+        if args.cmd == "signals":
+            return _signals(args)
         if args.cmd == "dashboard":
             return _dashboard(args)
         if args.cmd == "alerts":

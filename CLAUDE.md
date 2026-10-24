@@ -141,6 +141,8 @@ bot paper status
    Dashboard done: `bot.dashboard` (service `bot-dashboard`), Python's own HTTP server instead of FastAPI (no new
    dependency on the 512 MB server). Read-only: imports nothing from `bot`, never reads `.env`, GET only, binds
    127.0.0.1 only (`serve` refuses any other address); opened through an SSH tunnel. Telegram alerts: 5e.
+   `bot signals` (`bot.signal_report`): read-only per-coin view of H2b's daily checks; the verdict is
+   `BlendedMomentum.signal()` itself; it never changes `h2b_blend.py`, places orders or writes files.
 7. News + LLM, advisory/veto only
 
 Gates before live: testnet with at least 5 clean round trips; paper trading for

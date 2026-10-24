@@ -449,6 +449,23 @@ ssh -N -L 8050:127.0.0.1:8050 root@167.71.59.188
 and open **http://localhost:8050** in your browser. Close the terminal (or Ctrl+C) to close the tunnel.
 This needs SSH access to the server (your SSH key or root password from DigitalOcean).
 
+## How close is H2b to buying? (`bot signals`, read-only)
+
+`bot signals` shows, for each of the forward test's coins, what H2b checks once a day after the
+00:00 UTC daily close: each lookback's return (14, 28 and 56 days) against the bar it must clear
+(threshold x 30-day volatility x the square root of the days; H2b buys when 2 of the 3 clear it),
+the volatility pause (no entries while today's 30-day volatility is in the past year's top 20%),
+and the exit vote for an open trade (sells when 2 of the 3 returns are below zero). The verdict
+comes from H2b's own code, so it always matches what the runners do; the risk engine still decides
+every trade, and a coin already held is not bought again.
+
+It uses the forward test's frozen settings and public live prices, places no order, writes no file
+and changes nothing; a warning is shown if H2b's code or the config differ from the forward test's.
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot signals          # as the bot user
+```
+
 ## Going live (module 5f; REAL money; Sultan only)
 
 The live mode is the testnet runner on the real exchange, with more locks. Nothing is bought or sold on
