@@ -117,7 +117,7 @@ class TestnetRunner:
             sleep: Callable[[float], None] = time.sleep) -> None:
         self.log("started", capital=self.account.capital, mode=self.account.modes.mode.value,
                  breaches=sorted(self.account.modes.active_breaches), open=len(self.ledger.active()),
-                 note="new entries stay blocked until an operator runs: bot testnet resume")
+                 note=f"new entries stay blocked until an operator runs: bot {self.trader.environment} resume")
         ticks = 0
         try:
             while not self.stop_requested and (max_ticks is None or ticks < max_ticks):
@@ -175,7 +175,7 @@ class TestnetRunner:
                 if fault in self.account.modes.active_breaches:
                     self.account.modes.clear_fault(fault)
                     self.log("fault_cleared", fault=fault, note="reconciliation is clean again; entries stay "
-                                                                "blocked until: bot testnet resume")
+                                                                f"blocked until: bot {self.trader.environment} resume")
         if rec.mismatches:
             self.account.modes.report_fault("RECONCILIATION_MISMATCH", rec.mismatches[0])
         if rec.unprotected:

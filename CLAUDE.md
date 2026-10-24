@@ -159,6 +159,9 @@ bot paper status
 7. News + LLM, advisory/veto only
    Planned in `docs/intel-plan.md` (approved 24 Oct 2026): official news, market observations, a read-only
    risk monitor (may only block entries) and a daily report; none of it may import trading code.
+   Risk monitor done (step 1): `bot.monitor` + `bot monitor`: read-only findings (level, rule, reason, data)
+   across accounts and coins, appended to `~/monitor/findings.jsonl`; it never writes into a runner's folder
+   and does not block anything yet (blocking on a critical finding is a separate, reviewed change).
 
 Gates before live: testnet with at least 5 clean round trips; paper trading for
 8+ weeks and 30+ closed trades with at least 5 profitable and zero rule violations.

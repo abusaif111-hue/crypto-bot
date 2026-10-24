@@ -10,6 +10,7 @@
     bot alerts setup | test | run                         (Telegram alerts)
     bot dashboard [--port 8050]                           (private, read-only page; open it through an SSH tunnel)
     bot signals                                           (how close H2b is to buying each coin; read-only)
+    bot monitor                                           (risk monitor across accounts and coins; read-only)
     bot live check | baseline | reconcile | start | run | status | resume | block   (REAL money; Sultan's switch)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
@@ -807,6 +808,37 @@ def _alerts_run(args: argparse.Namespace, load=None, telegram=None) -> int:
     return 0
 
 
+def _monitor(args: argparse.Namespace, make_exchange=None, out=None) -> int:
+    """The risk monitor: findings across every account and the traded coins (read-only; changes nothing)."""
+    from bot import monitor
+    from bot.exchange.binance import BinanceReadOnly
+    from bot.market.data import MarketDataService
+
+    out = out or sys.stdout
+    cfg = load_config(args.config)
+    home = Path(os.path.expanduser(args.home))
+    ft = monitor._read_json(home / "forward-h2b" / "forward.json") or {}
+    groups = dict(ft.get("corr_groups") or {})
+    symbols = list(args.symbols or ft.get("symbols") or cfg.universe)
+    now = time.time()
+    data = None
+    if not args.no_market:
+        try:
+            data = MarketDataService((make_exchange or BinanceReadOnly)(environment="live"), _forward_cfg(cfg, symbols))
+        except Exception as e:                       # cannot even connect: report it as a finding, not a crash
+            findings = monitor.check(home, now, cfg, groups) + [monitor.Finding(
+                monitor.CRITICAL, "data outage", "binance", "could not connect to Binance",
+                {"detail": f"{type(e).__name__}: {e}"[:160]})]
+            out.write(monitor.render(findings, now, market_checked=False))
+            monitor.record(findings, Path(os.path.expanduser(args.record_dir)), now)
+            return 0
+    findings = monitor.check(home, now, cfg, groups, data, symbols)
+    out.write(monitor.render(findings, now, market_checked=data is not None))
+    path = monitor.record(findings, Path(os.path.expanduser(args.record_dir)), now)
+    out.write(f"Recorded in {path}\n")
+    return 0
+
+
 def _dashboard(args: argparse.Namespace) -> int:
     """The private dashboard (bot-dashboard): read-only, on this machine only (open it through an SSH tunnel)."""
     from bot import dashboard
@@ -1528,6 +1560,11 @@ def main(argv: list[str] | None = None) -> int:
         q.set_defaults(env="live")
     sg = sub.add_parser("signals", help="how close H2b is to buying each coin (read-only; changes nothing)")
     sg.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
+    mo = sub.add_parser("monitor", help="risk monitor across every account and coin (read-only; changes nothing)")
+    mo.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
+    mo.add_argument("--symbols", nargs="*", default=None, help="default: the forward test's coins")
+    mo.add_argument("--no-market", action="store_true", help="only the accounts; no Binance prices")
+    mo.add_argument("--record-dir", default="~/monitor", help="where findings are appended (findings.jsonl)")
     db = sub.add_parser("dashboard", help="private read-only dashboard on this machine (open via an SSH tunnel)")
     db.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
     db.add_argument("--host", default="127.0.0.1", help="this machine only: 127.0.0.1")
@@ -1629,6 +1666,8 @@ def main(argv: list[str] | None = None) -> int:
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
         if args.cmd == "signals":
             return _signals(args)
+        if args.cmd == "monitor":
+            return _monitor(args)
         if args.cmd == "dashboard":
             return _dashboard(args)
         if args.cmd == "alerts":
