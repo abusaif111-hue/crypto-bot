@@ -215,9 +215,9 @@ def _hashes(folder):
     return {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(folder.rglob("*")) if p.is_file()}
 
 
-def args_for(home, **kw):
-    return argparse.Namespace(config="x", home=str(home), reports_dir=str(home / "reports"),
-                              monitor_dir=str(home / "monitor"), no_market=True, send=False, resend=False, **kw)
+def args_for(folder, **kw):
+    return argparse.Namespace(config="x", home=str(folder), reports_dir=str(folder / "reports"),
+                              monitor_dir=str(folder / "monitor"), no_market=True, send=False, resend=False, **kw)
 
 
 def test_the_command_reads_only_and_saves_in_its_own_folders(home, monkeypatch):  # noqa: F811

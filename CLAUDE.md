@@ -165,6 +165,11 @@ bot paper status
    Market observations done (step 2): `bot.intel.market` + `bot market` (read-only; finished candles only;
    breadth over the forward test's coins). The regime rule lives in `bot.analysis.regime`, shared with the
    backtests (`selection.regime_labels` is the same function; never fork it).
+   Daily report done (step 3): `bot.daily_report` + `bot report [--send]` + `scripts/install_report_timer.sh`
+   (timer `bot-report`, 00:20 UTC, a oneshot job). Fixed conclusion rules (pause on any critical finding;
+   "further simulation (H2b)" only while its forward test runs without a breach; otherwise insufficient).
+   Telegram at most once a day (`~/reports/sent.json`: sending, sent, failed). `RESEARCH` holds only results
+   from real server runs; update it when a new run finishes, never with estimates.
 
 Gates before live: testnet with at least 5 clean round trips; paper trading for
 8+ weeks and 30+ closed trades with at least 5 profitable and zero rule violations.
