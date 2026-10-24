@@ -170,6 +170,10 @@ bot paper status
    "further simulation (H2b)" only while its forward test runs without a breach; otherwise insufficient).
    Telegram at most once a day (`~/reports/sent.json`: sending, sent, failed). `RESEARCH` holds only results
    from real server runs; update it when a new run finishes, never with estimates.
+   Official news done (step 5): `bot.news` (`sources`, `normalize`, `feed`) + `bot news check|show`; tier-A
+   official RSS/Atom feeds only, used only after `bot news check` read them on the server (`~/news/check.json`);
+   no readable time means the item is dropped, never guessed; listed, never scored. Requests send a generic
+   user agent; a contact only from NEWS_CONTACT. Never send the owner's email or account details to a site.
 
 Gates before live: testnet with at least 5 clean round trips; paper trading for
 8+ weeks and 30+ closed trades with at least 5 profitable and zero rule violations.

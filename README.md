@@ -525,6 +525,33 @@ stopped while sending is not repeated; `--resend` sends again). The dashboard sh
 It reads only: it cannot trade, never writes into a runner's folder, and reads the Telegram token only to
 send. Stop it with `systemctl disable --now bot-report.timer`.
 
+## Official news (`bot news`, read-only)
+
+The daily report's News section lists announcements from official bodies' own feeds (tier A):
+
+| Source | Kept |
+| --- | --- |
+| Federal Reserve, monetary policy | everything |
+| European Central Bank, press releases | interest rate and monetary policy decisions |
+| US Bureau of Labor Statistics, latest releases | CPI, employment situation, PPI |
+| US SEC, press releases | only items that mention crypto (needs `NEWS_CONTACT`, see below) |
+| US CFTC, press releases | only items that mention crypto |
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot news check           # once, as the bot user: which sources work on this server
+cd ~/crypto-bot && .venv/bin/bot news show            # the last 24 hours
+```
+
+- Only sources that passed `bot news check` are used. Every item shows its source, time (UTC), link, the
+  coins it names (or "all coins" for a macro item), a category and a confidence from the source's tier.
+- An item without a readable time, or dated in the future, is left out and counted, never given a guessed
+  time. Duplicates (same link, or same source and title) are merged. Items from before the last daily
+  close are marked.
+- News is listed, not scored: the report never says what an announcement will do to prices. Not covered:
+  ETF flows, exchange incidents, listings and token announcements, general news and social media.
+- Requests carry a generic user agent and nothing about you. The SEC refuses requests without a contact
+  address; it is used only if you put `NEWS_CONTACT=<an address you choose>` in `.env`.
+
 ## Dashboard (private, read-only)
 
 `bot dashboard` (service `bot-dashboard`) shows every account on one page: the live account, the

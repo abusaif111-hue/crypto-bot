@@ -13,6 +13,7 @@
     bot monitor                                           (risk monitor across accounts and coins; read-only)
     bot market                                            (daily market observations; read-only)
     bot report [--send]                                   (the daily report; Telegram once a day with --send)
+    bot news check | show                                 (official news sources: check them, show the last day)
     bot live check | baseline | reconcile | start | run | status | resume | block   (REAL money; Sultan's switch)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
@@ -861,6 +862,49 @@ def _market(args: argparse.Namespace, make_exchange=None, out=None) -> int:
     return 0
 
 
+def _news_check(args: argparse.Namespace, http=None, out=None) -> int:
+    """Fetch and read every official news source once, and record which ones work (on the server)."""
+    from bot.news import feed, sources
+
+    out = out or sys.stdout
+    now = time.time()
+    checks, items = feed.read_all(now, http=http or sources._https)
+    path = sources.save_check(checks, Path(os.path.expanduser(args.news_dir)), now)
+    out.write(f"Official news sources, checked {sources.utc(now)} (read-only; public feeds):\n")
+    for c in checks:
+        mark = "OK  " if c.ok else "FAIL"
+        extra = f"{c.items} items kept, newest {c.newest}" if c.ok else c.problem
+        undated = f"; {c.undated} without a readable time (left out)" if c.undated else ""
+        out.write(f"  {mark} {c.name}: {extra}{undated}\n       {c.url}\n")
+    ok = sum(c.ok for c in checks)
+    out.write(f"{ok} of {len(checks)} sources work; only these are used in the daily report. Saved in {path}\n")
+    return 0
+
+
+def _news_show(args: argparse.Namespace, http=None, out=None) -> int:
+    """The last day's items from the sources that passed the check."""
+    from bot.news import feed, normalize, sources
+
+    out = out or sys.stdout
+    folder = Path(os.path.expanduser(args.news_dir))
+    ok = sources.verified(folder)
+    if not ok:
+        print("Error: no source has passed the check yet; run: bot news check", file=sys.stderr)
+        return 2
+    now = time.time()
+    checks, items = feed.read_all(now, only=ok, http=http or sources._https)
+    shown = sorted(normalize.recent(items, now, args.hours), key=lambda i: i.published, reverse=True)
+    out.write(f"Official news, last {args.hours} hours ({len(shown)} items; listed, not scored):\n")
+    for it in shown:
+        coins = ", ".join(it.coins) if it.coins else "all coins"
+        out.write(f"  {sources.utc(it.published)}  {it.source_name}: {it.title}\n"
+                  f"     [{coins}; {it.category}; confidence {it.confidence}] {it.link}\n")
+    for c in checks:
+        if not c.ok and c.key in ok:
+            out.write(f"  could not read {c.name}: {c.problem}\n")
+    return 0
+
+
 class _Candles:
     """One price read per coin for the whole report: the monitor, the market view and H2b's checks all ask
     for the same 4h history, so it is fetched once and sliced (the 512 MB server; Binance's limits)."""
@@ -881,7 +925,7 @@ class _Candles:
         return have[1][-limit:]
 
 
-def _report(args: argparse.Namespace, make_exchange=None, load=None, telegram=None, out=None) -> int:
+def _report(args: argparse.Namespace, make_exchange=None, load=None, telegram=None, out=None, news_http=None) -> int:
     """The daily report (bot-report timer): market, risk, H2b's checks, evidence and data health. Read-only."""
     from bot import daily_report, dashboard, monitor, signal_report
     from bot.exchange.binance import BinanceReadOnly
@@ -912,8 +956,13 @@ def _report(args: argparse.Namespace, make_exchange=None, load=None, telegram=No
                 signals = signal_report.report(forward.make_strategy(forward.load(home / "forward-h2b")), data)
             except Exception:
                 signals = None
+    news = None
+    if not args.no_market:                              # --no-market: no network at all
+        from bot.news import feed, sources
+        news = feed.read_all(now, only=sources.verified(Path(os.path.expanduser(args.news_dir))),
+                             http=news_http or sources._https)
     report = daily_report.build(now, dashboard.read_all(home), findings, obs, signals, ft,
-                                market_checked=data is not None)
+                                market_checked=data is not None, news=news)
     monitor.record(findings, Path(os.path.expanduser(args.monitor_dir)), now)
     path = daily_report.save(report, Path(os.path.expanduser(args.reports_dir)))
     out.write(report.text())
@@ -1665,9 +1714,17 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
     rp.add_argument("--reports-dir", default="~/reports")
     rp.add_argument("--monitor-dir", default="~/monitor")
+    rp.add_argument("--news-dir", default="~/news", help="where bot news check recorded the working sources")
     rp.add_argument("--no-market", action="store_true", help="only the accounts; no Binance prices")
     rp.add_argument("--send", action="store_true", help="also send the short version to Telegram (once a day)")
     rp.add_argument("--resend", action="store_true", help="with --send: send again even if already sent today")
+    nw = sub.add_parser("news", help="official news (central banks, US data, regulators): check and show")
+    nwsub = nw.add_subparsers(dest="news_cmd", required=True)
+    nwsub.add_parser("check", help="fetch every official source once and record which ones work")
+    ns = nwsub.add_parser("show", help="the last day's items from the sources that work")
+    ns.add_argument("--hours", type=int, default=24)
+    for q in nwsub.choices.values():
+        q.add_argument("--news-dir", default="~/news")
     db = sub.add_parser("dashboard", help="private read-only dashboard on this machine (open via an SSH tunnel)")
     db.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
     db.add_argument("--host", default="127.0.0.1", help="this machine only: 127.0.0.1")
@@ -1769,6 +1826,8 @@ def main(argv: list[str] | None = None) -> int:
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
         if args.cmd == "signals":
             return _signals(args)
+        if args.cmd == "news":
+            return {"check": _news_check, "show": _news_show}[args.news_cmd](args)
         if args.cmd == "report":
             return _report(args)
         if args.cmd == "market":
