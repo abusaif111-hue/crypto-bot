@@ -12,6 +12,7 @@
     bot signals                                           (how close H2b is to buying each coin; read-only)
     bot monitor                                           (risk monitor across accounts and coins; read-only)
     bot market                                            (daily market observations; read-only)
+    bot report [--send]                                   (the daily report; Telegram once a day with --send)
     bot live check | baseline | reconcile | start | run | status | resume | block   (REAL money; Sultan's switch)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
@@ -860,6 +861,77 @@ def _market(args: argparse.Namespace, make_exchange=None, out=None) -> int:
     return 0
 
 
+class _Candles:
+    """One price read per coin for the whole report: the monitor, the market view and H2b's checks all ask
+    for the same 4h history, so it is fetched once and sliced (the 512 MB server; Binance's limits)."""
+
+    def __init__(self, data):
+        self.data, self.venue, self._cache = data, data.venue, {}
+
+    def books(self, symbols):
+        return self.data.books(symbols)
+
+    def closed_candles(self, symbol, interval, start_ms=None, end_ms=None, limit=500):
+        if start_ms is not None or end_ms is not None:
+            return self.data.closed_candles(symbol, interval, start_ms, end_ms, limit)
+        have = self._cache.get((symbol, interval))
+        if have is None or have[0] < limit:
+            have = (limit, self.data.closed_candles(symbol, interval, limit=limit))
+            self._cache[(symbol, interval)] = have
+        return have[1][-limit:]
+
+
+def _report(args: argparse.Namespace, make_exchange=None, load=None, telegram=None, out=None) -> int:
+    """The daily report (bot-report timer): market, risk, H2b's checks, evidence and data health. Read-only."""
+    from bot import daily_report, dashboard, monitor, signal_report
+    from bot.exchange.binance import BinanceReadOnly
+    from bot.intel import market
+    from bot.market.data import MarketDataService
+
+    out = out or sys.stdout
+    cfg = load_config(args.config)
+    home = Path(os.path.expanduser(args.home))
+    ft = monitor._read_json(home / "forward-h2b" / "forward.json") or {}
+    groups = dict(ft.get("corr_groups") or {})
+    symbols = list(ft.get("symbols") or cfg.universe)
+    now = time.time()
+    data, obs, signals, problem = None, [], None, None
+    if not args.no_market:
+        try:
+            data = _Candles(MarketDataService((make_exchange or BinanceReadOnly)(environment="live"),
+                                              _forward_cfg(cfg, symbols)))
+        except Exception as e:
+            problem = monitor.Finding(monitor.CRITICAL, "data outage", "binance", "could not connect to Binance",
+                                      {"detail": f"{type(e).__name__}: {e}"[:160]})
+    findings = monitor.check(home, now, cfg, groups, data, symbols) + ([problem] if problem else [])
+    if data is not None:
+        obs = market.gather(data, symbols)
+        if ft:
+            try:
+                from bot import forward
+                signals = signal_report.report(forward.make_strategy(forward.load(home / "forward-h2b")), data)
+            except Exception:
+                signals = None
+    report = daily_report.build(now, dashboard.read_all(home), findings, obs, signals, ft,
+                                market_checked=data is not None)
+    monitor.record(findings, Path(os.path.expanduser(args.monitor_dir)), now)
+    path = daily_report.save(report, Path(os.path.expanduser(args.reports_dir)))
+    out.write(report.text())
+    out.write(f"Saved in {path}\n")
+    if args.send:
+        from bot.alerts import Telegram, TelegramError
+        from bot.exchange.credentials import CredentialsError, load_telegram
+        try:
+            t = (load or load_telegram)()
+            what = daily_report.send_once(report, Path(os.path.expanduser(args.reports_dir)),
+                                          (telegram or Telegram)(t.token, t.chat_id), resend=args.resend)
+        except (CredentialsError, TelegramError) as e:
+            print(f"Error: the report is saved but was not sent: {e}", file=sys.stderr)
+            return 2
+        out.write(f"Telegram: {what}\n")
+    return 0
+
+
 def _dashboard(args: argparse.Namespace) -> int:
     """The private dashboard (bot-dashboard): read-only, on this machine only (open it through an SSH tunnel)."""
     from bot import dashboard
@@ -1589,6 +1661,13 @@ def main(argv: list[str] | None = None) -> int:
     mk = sub.add_parser("market", help="daily market observations for the traded coins (read-only)")
     mk.add_argument("--home", default="~", help="the folder holding forward-h2b/ (for the coin list)")
     mk.add_argument("--symbols", nargs="*", default=None, help="default: the forward test's coins")
+    rp = sub.add_parser("report", help="the daily report: market, risk, H2b's checks, evidence (read-only)")
+    rp.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
+    rp.add_argument("--reports-dir", default="~/reports")
+    rp.add_argument("--monitor-dir", default="~/monitor")
+    rp.add_argument("--no-market", action="store_true", help="only the accounts; no Binance prices")
+    rp.add_argument("--send", action="store_true", help="also send the short version to Telegram (once a day)")
+    rp.add_argument("--resend", action="store_true", help="with --send: send again even if already sent today")
     db = sub.add_parser("dashboard", help="private read-only dashboard on this machine (open via an SSH tunnel)")
     db.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
     db.add_argument("--host", default="127.0.0.1", help="this machine only: 127.0.0.1")
@@ -1690,6 +1769,8 @@ def main(argv: list[str] | None = None) -> int:
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
         if args.cmd == "signals":
             return _signals(args)
+        if args.cmd == "report":
+            return _report(args)
         if args.cmd == "market":
             return _market(args)
         if args.cmd == "monitor":
