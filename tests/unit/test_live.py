@@ -14,7 +14,7 @@ from bot.core import config as config_mod
 from bot.core.config import (LIVE_CAPITAL_CEILING_USDT, LIVE_CONFIRM_ENV, LIVE_CONFIRM_PHRASE, AppConfig,
                              LiveTradingNotConfirmed)
 from bot.exchange.binance import ExchangeError, trading_key_problems
-from bot.exchange.trading import BinanceTrader, LiveAuthorization, OrderRequest, authorize_live
+from bot.exchange.trading import BinanceTrader, LiveAuthorization, authorize_live
 from bot.execution.account import ACCOUNT_FILE, AccountError, TradingAccount
 from bot.execution.ledger import Ledger
 from bot.execution.runner import RunnerError, TestnetRunner
