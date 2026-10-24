@@ -1342,6 +1342,12 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
         else:
             cfg, symbols, corr_groups, desc = _research_setup(args, load_config(args.config))
             interval, need = args.interval, memory_needed_mb(len(symbols))
+        # checked before loading: the needed figure is the whole run's peak, the candles included
+        free = available_memory_mb()
+        if free is not None and free < need + 30:
+            print(f"Error: this run needs about {need} MB of memory plus a margin, and only {free} MB is free. "
+                  f"Stop other programs or add swap, then try again.", file=sys.stderr)
+            return 2
         candles = {s: history.load(data_dir, s, interval) for s in symbols}
         rules = {s: history.load_rules(data_dir, s) for s in symbols}
     except (history.DataError, h4_coins.H4CoinsError) as e:
@@ -1352,11 +1358,6 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
         out.write(f"  {time.strftime('%H:%M:%S', time.gmtime())} {msg}\n")
         out.flush()
 
-    free = available_memory_mb()
-    if free is not None and free < need + 30:
-        print(f"Error: this run needs about {need} MB of memory plus a margin, and only {free} MB is free. "
-              f"Stop other programs or add swap, then try again.", file=sys.stderr)
-        return 2
     cost = report.CostModel()
     meta = report.provenance(cfg, candles, cost)
     if desc:
