@@ -138,6 +138,9 @@ bot paper status
    capped amount without waiting for the paper review; the H2b forward test keeps running. Sultan sets the
    cap and flips the live switch himself (1 USDT, his first figure, is below Binance's 5 USDT minimum order).
 6. Loss-review loop, dashboard (FastAPI, not public), Telegram alerts
+   Dashboard done: `bot.dashboard` (service `bot-dashboard`), Python's own HTTP server instead of FastAPI (no new
+   dependency on the 512 MB server). Read-only: imports nothing from `bot`, never reads `.env`, GET only, binds
+   127.0.0.1 only (`serve` refuses any other address); opened through an SSH tunnel. Telegram alerts: 5e.
 7. News + LLM, advisory/veto only
 
 Gates before live: testnet with at least 5 clean round trips; paper trading for

@@ -424,6 +424,31 @@ bash /home/bot/crypto-bot/scripts/install_alerts_service.sh      # as root: star
 alerts test
 ```
 
+## Dashboard (private, read-only)
+
+`bot dashboard` (service `bot-dashboard`) shows every account on one page: the live account, the
+testnet runner, the H2b forward test and paper trading. For each one it shows the mode and any
+breaker, equity against what it started with, drawdown, open trades with their stop and target,
+closed trades, and recent activity. It refreshes itself every minute and flags a runner that has gone
+silent.
+
+It only reads the runners' files: it imports nothing that trades, never talks to Binance and never
+reads `.env`. It answers GET only and listens on `127.0.0.1:8050`, so it is never on the internet; you
+open it from your own computer through an SSH tunnel.
+
+```bash
+bash /home/bot/crypto-bot/scripts/install_dashboard_service.sh      # as root, once
+```
+
+Then on your own computer (Windows PowerShell, macOS or Linux terminal), keep this running:
+
+```bash
+ssh -N -L 8050:127.0.0.1:8050 root@167.71.59.188
+```
+
+and open **http://localhost:8050** in your browser. Close the terminal (or Ctrl+C) to close the tunnel.
+This needs SSH access to the server (your SSH key or root password from DigitalOcean).
+
 ## Going live (module 5f; REAL money; Sultan only)
 
 The live mode is the testnet runner on the real exchange, with more locks. Nothing is bought or sold on
@@ -592,5 +617,5 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
 5. Order execution on the testnet: 5a trading adapter, 5b protected entries (gate met: 5 clean
    round trips), 5c reconciliation, 5d the testnet runner, 5e Telegram alerts and 5f the live mode
    (off until Sultan switches it on) done
-6. Dashboard and Telegram alerts
+6. Private dashboard (done) and Telegram alerts (done, 5e); next the loss-review loop
 7. News and AI analysis (advisory only)

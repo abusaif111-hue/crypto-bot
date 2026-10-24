@@ -8,6 +8,7 @@
     bot reconcile [--set-baseline --operator NAME --reason "..."]   (testnet ledger vs account; places nothing)
     bot testnet start | run | status | resume | block     (H2b on the testnet: real orders, fake money)
     bot alerts setup | test | run                         (Telegram alerts)
+    bot dashboard [--port 8050]                           (private, read-only page; open it through an SSH tunnel)
     bot live check | baseline | reconcile | start | run | status | resume | block   (REAL money; Sultan's switch)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
@@ -804,6 +805,30 @@ def _alerts_run(args: argparse.Namespace, load=None, telegram=None) -> int:
     return 0
 
 
+def _dashboard(args: argparse.Namespace) -> int:
+    """The private dashboard (bot-dashboard): read-only, on this machine only (open it through an SSH tunnel)."""
+    from bot import dashboard
+
+    try:
+        server = dashboard.serve(Path(os.path.expanduser(args.home)), args.host, args.port)
+    except (ValueError, OSError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    print(f"Dashboard on http://{args.host}:{args.port}/ (this machine only; read-only)", flush=True)
+
+    def stop(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, stop)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
 DEFAULT_PAPER_DIR = "~/paper"
 PAPER_GATE_WEEKS, PAPER_GATE_TRADES, PAPER_GATE_PROFITABLE = 8, 30, 5
 
@@ -1436,6 +1461,10 @@ def main(argv: list[str] | None = None) -> int:
     for q in lsub.choices.values():
         q.add_argument("--state-dir", default=DEFAULT_LIVE_DIR, help="live ledger and account folder")
         q.set_defaults(env="live")
+    db = sub.add_parser("dashboard", help="private read-only dashboard on this machine (open via an SSH tunnel)")
+    db.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
+    db.add_argument("--host", default="127.0.0.1", help="this machine only: 127.0.0.1")
+    db.add_argument("--port", type=int, default=8050)
     al = sub.add_parser("alerts", help="Telegram alerts: set up, test, run (the bot-alerts service)")
     asub = al.add_subparsers(dest="alerts_cmd", required=True)
     asub.add_parser("setup", help="connect your Telegram (the token is typed hidden; nothing secret is shown)")
@@ -1527,6 +1556,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "forward":
             return {"start": _forward_start, "run": _forward_run, "status": _forward_status, "report": _forward_report,
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
+        if args.cmd == "dashboard":
+            return _dashboard(args)
         if args.cmd == "alerts":
             return {"setup": _alerts_setup, "test": _alerts_test, "run": _alerts_run}[args.alerts_cmd](args)
         if args.cmd == "live":
