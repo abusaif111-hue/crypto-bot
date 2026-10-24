@@ -12,16 +12,19 @@ import random
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from bot.exchange.interface import Candle
+from bot.exchange.interface import INTERVAL_MS, Candle
 from bot.risk.models import TradeIntent
 from bot.strategies.base import Action, AtrExit, CandleSource, OpenTrade, Strategy, entry_limit, make_intent
+
+
+CHANCE_PER_4H = 1 / 30                         # about one idea per coin every 5 days
 
 
 @dataclass
 class RandomEntry:
     symbols: list[str]
     seed: int
-    chance_per_candle: float = 1 / 30          # about one idea per coin every 5 days on 4h candles
+    chance_per_candle: float = CHANCE_PER_4H   # about one idea per coin every 5 days on 4h candles
     exit: AtrExit = field(default_factory=AtrExit)
     exits: Strategy | None = None              # borrow this strategy's exits
     interval: str = "4h"
@@ -31,6 +34,13 @@ class RandomEntry:
         if not 0 < self.chance_per_candle <= 1:
             raise ValueError("chance_per_candle must be in (0, 1]")
         self._rng = random.Random(self.seed)
+
+    @classmethod
+    def with_exits_of(cls, strategy: Strategy, symbols: list[str], seed: int) -> "RandomEntry":
+        """Random entries on the strategy's own candles with its exits, at the same number of ideas
+        per day whatever the interval (on 4h candles exactly the default chance)."""
+        chance = CHANCE_PER_4H * INTERVAL_MS[strategy.interval] / INTERVAL_MS["4h"]
+        return cls(symbols, seed=seed, chance_per_candle=chance, exits=strategy, interval=strategy.interval)
 
     def params(self) -> dict[str, object]:
         p = {"seed": self.seed, "chance_per_candle": self.chance_per_candle}

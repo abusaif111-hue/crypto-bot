@@ -13,7 +13,8 @@
     bot live check | baseline | reconcile | start | run | status | resume | block   (REAL money; Sultan's switch)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
-    bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b)
+    bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b, H4)
+    bot backtest h4-memory                                (once: H4 on four coins or BTC/ETH only, by measured memory)
     bot backtest holdout                                  (the one-time holdout test; Sultan only)
 
 `try-trade` runs a proposed trade through the real risk engine with example
@@ -1301,8 +1302,9 @@ def _backtest_baselines(args: argparse.Namespace, out=None) -> int:
     return 0
 
 
-STRATEGIES = ("H1", "H2", "H3", "H2b")
-HOLDOUT_STRATEGIES = ("H1", "H2", "H3")      # H2b was designed after the holdout was seen (docs/h2b-plan.md)
+STRATEGIES = ("H1", "H2", "H3", "H2b", "H4")
+DEFAULT_RUN = ("H1", "H2", "H3", "H2b")       # H4 runs on its own: 1h candles and its own coins (docs/h4-plan.md)
+HOLDOUT_STRATEGIES = ("H1", "H2", "H3")      # H2b and H4 were designed after the holdout was seen
 
 
 def _make_strategy(name: str, symbols: list[str]):
@@ -1310,22 +1312,39 @@ def _make_strategy(name: str, symbols: list[str]):
     from bot.strategies.h2_momentum import TimeSeriesMomentum
     from bot.strategies.h2b_blend import BlendedMomentum
     from bot.strategies.h3_mean_reversion import RangeMeanReversion
+    from bot.strategies.h4_pullback import TrendPullback
 
     return {"H1": TrendBreakout, "H2": TimeSeriesMomentum, "H3": RangeMeanReversion,
-            "H2b": BlendedMomentum}[name](symbols)
+            "H2b": BlendedMomentum, "H4": TrendPullback}[name](symbols)
 
 
 def _backtest_run(args: argparse.Namespace, out=None) -> int:
-    """Walk-forward and robustness tests of H1-H3 and H2b on the research period. The holdout stays locked."""
-    from bot.backtest import history, report, selection
+    """Walk-forward and robustness tests of H1-H3, H2b and H4 on the research period. The holdout stays locked."""
+    from bot.backtest import h4_coins, history, report, selection
+    from bot.backtest.universe import available_memory_mb, memory_needed_mb
 
     data_dir = Path(os.path.expanduser(args.data_dir))
     out = out or sys.stdout
+    h4 = "H4" in args.strategy
+    if h4 and list(args.strategy) != ["H4"]:
+        print("Error: run H4 on its own (--strategy H4): it uses 1h candles and its own coins", file=sys.stderr)
+        return 2
     try:
-        cfg, symbols, corr_groups, desc = _research_setup(args, load_config(args.config))
-        candles = {s: history.load(data_dir, s, args.interval) for s in symbols}
+        if h4:
+            # the coins come only from the one-time memory check (docs/h4-plan.md, decision 4a)
+            rec = h4_coins.load(data_dir)
+            base = load_config(args.config)
+            symbols, corr_groups, interval = list(rec["coins"]), rec["groups"], h4_coins.INTERVAL
+            cfg = type(base).model_validate({**base.model_dump(), "universe": symbols})
+            desc = "; ".join(f"{s} ({(corr_groups or {}).get(s, 'majors')})" for s in symbols) + \
+                f" (1h candles; coins from the memory check of {rec['decided_at']})"
+            need = h4_coins.needed_mb(rec)
+        else:
+            cfg, symbols, corr_groups, desc = _research_setup(args, load_config(args.config))
+            interval, need = args.interval, memory_needed_mb(len(symbols))
+        candles = {s: history.load(data_dir, s, interval) for s in symbols}
         rules = {s: history.load_rules(data_dir, s) for s in symbols}
-    except history.DataError as e:
+    except (history.DataError, h4_coins.H4CoinsError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
 
@@ -1333,8 +1352,7 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
         out.write(f"  {time.strftime('%H:%M:%S', time.gmtime())} {msg}\n")
         out.flush()
 
-    from bot.backtest.universe import available_memory_mb, memory_needed_mb
-    need, free = memory_needed_mb(len(symbols)), available_memory_mb()
+    free = available_memory_mb()
     if free is not None and free < need + 30:
         print(f"Error: this run needs about {need} MB of memory plus a margin, and only {free} MB is free. "
               f"Stop other programs or add swap, then try again.", file=sys.stderr)
@@ -1359,6 +1377,26 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
     for name, ok, folder in verdicts:
         verdict = "passes walk-forward; next a forward test, if Sultan approves" if ok else "does not qualify"
         out.write(f"  {name}: {verdict}  ({folder})\n")
+    return 0
+
+
+def _backtest_h4_memory(args: argparse.Namespace, out=None) -> int:
+    """Once: measures whether H4 fits on the four screened coins with 1h candles, else BTC and ETH only."""
+    from bot.backtest import h4_coins, history, universe
+
+    data_dir = Path(os.path.expanduser(args.data_dir))
+    out = out or sys.stdout
+    try:
+        u = universe.load_universe(data_dir)
+        out.write("Measuring H4's memory on 1h candles: BTC alone, then BTC and ETH (a few minutes; "
+                  "H4's trading results from these runs are discarded unseen)...\n")
+        out.flush()
+        rec = h4_coins.decide(data_dir, list(u["symbols"]), u["groups"], load_config(args.config), args.operator)
+    except (history.DataError, h4_coins.H4CoinsError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    out.write(h4_coins.render(rec))
+    out.write(f"Recorded in {data_dir / h4_coins.DECISION_FILE} (never overwritten). Next: bot backtest run --strategy H4\n")
     return 0
 
 
@@ -1562,11 +1600,14 @@ def main(argv: list[str] | None = None) -> int:
     bb.add_argument("--seeds", type=int, default=200, help="number of random-entry runs")
     bb.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     br = bsub.add_parser("run", help="walk-forward and robustness tests of strategies H1-H3, H2b (research period)")
-    br.add_argument("--strategy", nargs="+", choices=STRATEGIES, default=list(STRATEGIES))
+    br.add_argument("--strategy", nargs="+", choices=STRATEGIES, default=list(DEFAULT_RUN),
+                    help="default: H1 H2 H3 H2b; H4 runs alone, on the coins from bot backtest h4-memory")
     br.add_argument("--random-runs", type=int, default=50, help="random-entry runs with the same exits")
     br.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     br.add_argument("--screened", action="store_true",
                     help="use the coins and correlation groups picked by bot backtest screen")
+    bm = bsub.add_parser("h4-memory", help="once: do four coins on 1h candles fit the memory for H4? (else BTC, ETH)")
+    bm.add_argument("--operator", required=True)
     bh = bsub.add_parser("holdout", help="the one-time holdout test (Sultan only; recorded; a second run is VOID)")
     bh.add_argument("--strategy", required=True, choices=HOLDOUT_STRATEGIES)
     bh.add_argument("--operator", required=True)
@@ -1575,12 +1616,13 @@ def main(argv: list[str] | None = None) -> int:
     bh.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     for q in bsub.choices.values():
         q.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
-        q.add_argument("--interval", default="4h", choices=["4h"])
+        q.add_argument("--interval", default="4h", choices=["4h", "1h"] if q is bf else ["4h"])
     args = p.parse_args(argv)
     try:
         if args.cmd == "backtest":
             return {"screen": _backtest_screen, "fetch": _backtest_fetch, "baselines": _backtest_baselines,
-                    "run": _backtest_run, "holdout": _backtest_holdout}[args.backtest_cmd](args)
+                    "run": _backtest_run, "h4-memory": _backtest_h4_memory,
+                    "holdout": _backtest_holdout}[args.backtest_cmd](args)
         if args.cmd == "forward":
             return {"start": _forward_start, "run": _forward_run, "status": _forward_status, "report": _forward_report,
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)

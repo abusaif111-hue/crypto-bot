@@ -193,6 +193,33 @@ Result (23 Oct 2026): the screen picked XRP and BNB; H2 on BTC, ETH, XRP and BNB
 the walk-forward part** of the selection rule (121 trades, +1.05 USDT per trade after
 doubled costs).
 
+### H4: hourly pullbacks in an uptrend (`docs/h4-plan.md`, approved by Sultan)
+
+H4 checks every hour: in a coin whose daily trend is up (close above its 50-day average, and
+that average rising over 10 days), it buys the first hour of a sharp drop (the close more than
+`dip` standard deviations below the last 24 hourly closes). Stop `stop_atr` x daily ATR(14),
+take-profit 3R, time stop 72 hours, and a sale when the daily close falls below its 50-day
+average. Two tunable settings (`dip` 2.0, `stop_atr` 1.0). It never runs on the holdout.
+
+```bash
+bot backtest fetch --interval 1h --screened             # 1h history of BTC, ETH, XRP and BNB (public data)
+bot backtest h4-memory --operator Sultan                # once: four coins, or BTC and ETH only
+nohup bot backtest run --strategy H4 > ~/backtests/run-h4.log 2>&1 &
+tail -f ~/backtests/run-h4.log
+```
+
+- **Which coins (Sultan's decision 4a):** `h4-memory` measures, in a fresh process, the peak
+  memory of one full research-period H4 backtest with BTC alone and with BTC and ETH, and
+  estimates four coins from the difference. Four coins are used only if that estimate plus
+  30 MB fits in the memory available at the start (with the services running). The H4 results
+  of those runs are thrown away unseen. The answer is written once to
+  `~/backtest-data/h4-coins.json` and never overwritten; `run --strategy H4` uses only those coins.
+- H4 runs on its own (`--strategy H4`), on 1h candles. Its random-entry comparison uses the same
+  1h candles, H4's own exits and the same number of random ideas per day as for the 4h strategies.
+- Same walk-forward and the same 7-check selection rule. If H4 fails any check it is dropped,
+  not tuned. If it passes, the next step is its own forward test with simulated money
+  (`~/forward-h4`, built next), which only Sultan starts.
+
 ### Step 3: the holdout (Sultan only, once)
 
 ```bash

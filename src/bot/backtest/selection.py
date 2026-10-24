@@ -106,7 +106,7 @@ def evaluate(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[s
     say(f"{strategy.name}: {random_runs} random-entry runs with the same exits")
     rand = []
     for seed in range(random_runs):
-        r = run(RandomEntry(sorted(candles), seed=seed, exits=strategy), candles, rules, cfg, cost,
+        r = run(RandomEntry.with_exits_of(strategy, sorted(candles), seed), candles, rules, cfg, cost,
                 RESEARCH_START_MS, edge=True, corr_groups=corr_groups)
         e = _expectancy(r.trades)
         if e is not None:
