@@ -222,8 +222,27 @@ def _card(a: Account, now: float) -> str:
 </section>"""
 
 
-def render(accounts: list[Account], now: float) -> str:
-    cards = "".join(_card(a, now) for a in accounts)
+REPORT = Path("reports") / "latest.md"
+
+
+def read_report(home: Path) -> str | None:
+    """The latest daily report (bot report), or None when there is none yet."""
+    try:
+        return (Path(home) / REPORT).read_text()[:200_000]
+    except OSError:
+        return None
+
+
+def _report_card(text: str | None) -> str:
+    if text is None:
+        return '<section class="card"><h2>Daily report</h2><p class="muted">No report yet (bot report).</p></section>'
+    head = text.splitlines()[:2]
+    return (f'<section class="card"><h2>Daily report</h2><p>{"<br>".join(_e(x) for x in head)}</p>'
+            f'<p><a href="/report">The full report</a></p></section>')
+
+
+def render(accounts: list[Account], now: float, report: str | None = None) -> str:
+    cards = _report_card(report) + "".join(_card(a, now) for a in accounts)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="{REFRESH_S}"><title>Crypto bot</title>
@@ -261,8 +280,11 @@ def make_handler(home: Path, clock=time.time) -> type[BaseHTTPRequestHandler]:
             if self.path.split("?")[0] == "/health":
                 body, ctype, code = b"ok\n", "text/plain; charset=utf-8", 200
             elif self.path.split("?")[0] in ("/", "/index.html"):
-                body = render(read_all(home), clock()).encode()
+                body = render(read_all(home), clock(), read_report(home)).encode()
                 ctype, code = "text/html; charset=utf-8", 200
+            elif self.path.split("?")[0] == "/report":
+                body = (read_report(home) or "No report yet (bot report).\n").encode()
+                ctype, code = "text/plain; charset=utf-8", 200
             else:
                 body, ctype, code = b"not found\n", "text/plain; charset=utf-8", 404
             self.send_response(code)

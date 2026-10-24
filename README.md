@@ -501,6 +501,30 @@ cd ~/crypto-bot && .venv/bin/bot market               # as the bot user
 
 These are observations, not forecasts. Short or missing history is shown as such, never filled in.
 
+## Daily report (`bot report`, read-only)
+
+Once a day after the daily close, one report from what the bot already measures, in the order the plan
+asks for: market regime and uncertainty, news (not covered yet, and it says so), the coins'
+observations, scenarios from H2b's own rules (how far each coin is from H2b's bars, and the exits of any
+open trade), risk per account with every monitor warning, the research record and the forward test's
+progress, and data quality. The conclusion follows fixed rules and is never forced positive:
+
+| Conclusion | When |
+| --- | --- |
+| Pause analysis | Any critical finding: missing or stale prices, a silent runner, a failed reconciliation, a tripped drawdown breaker |
+| Sufficient evidence for further simulation (H2b) | H2b's forward test is running without a breach (H2b is the one strategy that passed walk-forward) |
+| Insufficient evidence | Otherwise (the default) |
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot report               # print and save to ~/reports/<date>.md (as the bot user)
+bash /home/bot/crypto-bot/scripts/install_report_timer.sh   # as root, once: every day at 00:20 UTC (04:20 Muscat)
+```
+
+The timer runs `bot report --send`: the short version goes to Telegram **at most once a day** (a run that
+stopped while sending is not repeated; `--resend` sends again). The dashboard shows the latest report.
+It reads only: it cannot trade, never writes into a runner's folder, and reads the Telegram token only to
+send. Stop it with `systemctl disable --now bot-report.timer`.
+
 ## Dashboard (private, read-only)
 
 `bot dashboard` (service `bot-dashboard`) shows every account on one page: the live account, the
