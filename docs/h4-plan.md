@@ -1,10 +1,10 @@
 # H4 plan: hourly pullbacks in an uptrend (short-term trading)
 
-Status: **DRAFT, written 24 Oct 2026, waiting for Sultan's decisions in section 7.** Nothing
-is built or tested yet. No 1-hour price history has been downloaded or looked at for this plan.
-Once Sultan approves, the approving commit is the record of what was decided before any H4
-result existed. After that, changing anything below (a setting, a coin, a date or a pass rule)
-makes it a new strategy with a new forward test.
+Status: **APPROVED by Sultan on 24 Oct 2026 (decisions 1, 2 and 3, and option (a) for decision 4,
+in section 7). Frozen.** Written on 24 Oct 2026 before any 1-hour price history was downloaded or
+looked at. The approving commit is the record of what was decided before any H4 result existed.
+Changing anything below after that (a setting, a coin, a date or a pass rule) makes it a new
+strategy with a new forward test.
 
 ## 1. Why H4
 
@@ -180,10 +180,15 @@ Steps B and C run on the server, and results come only from those runs.
 
 ## 7. Sultan's decisions
 
-- [ ] 1. Approve H4 as defined in section 3 (rules, settings, coins).
-- [ ] 2. Approve the test plan and pass rules in section 4, including the forward test's length
+- [x] 1. Approve H4 as defined in section 3 (rules, settings, coins).
+- [x] 2. Approve the test plan and pass rules in section 4, including the forward test's length
       (at least 12 weeks and 60 closed trades, at most 12 months).
-- [ ] 3. Approve a second forward test running next to H2b's, with simulated money only.
-- [ ] 4. If step A shows four coins on 1h candles do not fit the server's memory: (a) test H4 on
+- [x] 3. Approve a second forward test running next to H2b's, with simulated money only.
+- [x] 4. If step A shows four coins on 1h candles do not fit the server's memory: (a) test H4 on
       BTC and ETH only, or (b) resize the server for the backtest. Pick one now, before any
       H4 data is seen.
+      **Sultan chose (a).** If step A's measurement shows four coins on 1h candles do not fit,
+      H4 is tested and forward-tested on BTC and ETH only, decided by the measurement alone and
+      before any H4 result. With two coins (one correlation group) H4 makes fewer trades, so the
+      100-trade check is harder to pass (H2 failed it on these two coins); if it fails, that is the
+      result, and no coin is added afterwards.
