@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(live status)",
+      "Bash(forward status)",
+      "Bash(paper status)",
+      "Bash(testnet status)",
+      "Bash(live log)",
+      "Bash(live log *)",
+      "Bash(forward log)",
+      "Bash(forward log *)",
+      "Bash(paper log)",
+      "Bash(paper log *)",
+      "Bash(testnet log)",
+      "Bash(testnet log *)",
+      "Bash(alerts log)",
+      "Bash(alerts log *)",
+      "Bash(.venv/bin/bot signals)",
+      "Bash(free -m)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Edit(./.env)",
+      "Write(./.env)",
+      "Edit(./config/live.yaml)",
+      "Write(./config/live.yaml)",
+      "Edit(./config/default.yaml)",
+      "Write(./config/default.yaml)",
+      "Bash(cat .env)",
+      "Bash(live start *)",
+      "Bash(live baseline *)",
+      "Bash(scripts/live start *)",
+      "Bash(scripts/live baseline *)",
+      "Bash(forward start *)",
+      "Bash(scripts/forward start *)",
+      "Bash(testnet start *)",
+      "Bash(scripts/testnet start *)",
+      "Bash(paper trade *)",
+      "Bash(scripts/paper trade *)",
+      "Bash(alerts setup)",
+      "Bash(scripts/alerts setup)"
+    ]
+  }
+}

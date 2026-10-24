@@ -106,7 +106,10 @@ bot paper status
    four coins does not fit the server's memory, H4 uses BTC and ETH only (his decision 4a).
    H4 is `bot.strategies.h4_pullback` (1h; fixed values pinned by `tests/unit/test_h4.py`). Its coins come only
    from `bot backtest h4-memory` (`bot.backtest.h4_coins`, written once to `h4-coins.json`, never overwritten or
-   re-run); `bot backtest run --strategy H4` runs it alone. Next for H4: its own forward test (`~/forward-h4`).
+   re-run); `bot backtest run --strategy H4` runs it alone. The memory check chose BTC and ETH only (24 Oct 2026).
+   **H4 did not qualify on walk-forward (24 Oct 2026) and is rejected:** 331 out-of-sample trades, -1.51 USDT
+   per trade (-5.68 with doubled costs), no better than random entries with the same exits. Per its plan it is
+   not tuned or re-run and gets no forward test; never re-test it with changed settings, coins or a regime filter.
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
    (5a done: `bot.exchange.trading.BinanceTrader`, testnet only, 7 allow-listed endpoints, `bot check-trading`;
    only `bot.execution` and the CLI may import it). Never re-send an order whose outcome is unknown: Binance
