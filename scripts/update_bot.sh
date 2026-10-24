@@ -31,13 +31,13 @@ else
 fi
 
 services=()
-for s in bot-paper bot-forward bot-testnet bot-alerts; do
+for s in bot-paper bot-forward bot-testnet bot-alerts bot-live; do
   if systemctl is-enabled "$s" >/dev/null 2>&1; then services+=("$s"); fi
 done
 if [[ ${#services[@]} -gt 0 ]]; then
   echo
   echo "==> These services are still running the old code: ${services[*]}. To load the new code, as root run:"
   echo "    systemctl restart ${services[*]}"
-  echo "    (after a restart, new entries stay blocked until each is resumed: paper / forward / testnet resume"
+  echo "    (after a restart, new entries stay blocked until each is resumed: paper / forward / testnet / live resume"
   echo "     --operator NAME --reason \"...\")"
 fi

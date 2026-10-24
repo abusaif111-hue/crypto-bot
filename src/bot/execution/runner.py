@@ -1,4 +1,5 @@
-"""Testnet runner (module 5d): H2b places real orders on the Binance SPOT TESTNET (fake money).
+"""Testnet runner (module 5d), also the live runner (5f): H2b places real orders on the Binance SPOT
+TESTNET (fake money), or on the real exchange with Sultan's live switch (`LiveAuthorization`).
 
 Every round (default 60 seconds) it:
 1. reconciles the ledger with the testnet account (`bot.execution.reconcile`) and records what is
@@ -15,8 +16,9 @@ Every round (default 60 seconds) it:
    neither repeats nor skips a decision.
 
 Signals come from live market data (the same prices the forward test sees); orders, the risk
-engine's market snapshot and valuations use the testnet's own prices and rules. Testnet only:
-`BinanceTrader` refuses any other environment. Everything that happens goes to `journal.jsonl`
+engine's market snapshot and valuations use the exchange's own prices and rules. On the real exchange the
+runner starts only with a trader that carries Sultan's live authorization, and `BinanceTrader` refuses
+to place or cancel an order without it. Everything that happens goes to `journal.jsonl`
 in the state directory and to the service log.
 """
 from __future__ import annotations
@@ -35,7 +37,7 @@ from bot.core.ids import new_intent_id
 from bot.core.money import ZERO, fmt
 from bot.exchange.binance import ExchangeError
 from bot.exchange.interface import INTERVAL_MS
-from bot.exchange.trading import BinanceTrader, OrderStatusUnknown
+from bot.exchange.trading import BinanceTrader, LiveAuthorization, OrderStatusUnknown
 from bot.execution import entry, exit as exits, reconcile
 from bot.execution.account import QUOTE, TradingAccount, as_utc
 from bot.execution.ledger import CLOSED, NOT_OPENED, OPEN, Ledger, LedgerError, TrackedTrade
@@ -86,8 +88,14 @@ class TestnetRunner:
     _seen_history: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
-        if self.trader.environment != "testnet":
-            raise RunnerError("the runner trades on the testnet only")
+        if self.trader.environment not in ("testnet", "live"):
+            raise RunnerError(f"the runner trades on the testnet or, with Sultan's live switch, live; "
+                              f"not {self.trader.environment!r}")
+        if self.trader.environment == "live" and not isinstance(getattr(self.trader, "authorization", None),
+                                                                LiveAuthorization):
+            raise RunnerError("live trading needs Sultan's live switch (config live_trading and BOT_LIVE_CONFIRM)")
+        if self.ledger.environment != self.trader.environment:
+            raise RunnerError(f"the ledger is for {self.ledger.environment}, the trader for {self.trader.environment}")
         self.state_dir = Path(self.state_dir)
         (self.state_dir / REQUESTS_DIR).mkdir(parents=True, exist_ok=True, mode=0o700)
         self._decided = _load_clock(self.state_dir / CLOCK_FILE)
@@ -133,7 +141,8 @@ class TestnetRunner:
         self._report_mode_changes()
         if state is not None and now - self._last_status >= STATUS_EVERY_S:
             self._last_status = now
-            self.log("status", equity=state.equity, cash=state.free_quote, drawdown_pct=state.drawdown_pct,
+            self.log("status", equity=self.account.last_equity, sized_on=state.equity, cash=state.free_quote,
+                     drawdown_pct=state.drawdown_pct,
                      open=[t.symbol for t in self.ledger.trades.values() if t.status == OPEN],
                      mode=state.mode.value)
         self.account.save()

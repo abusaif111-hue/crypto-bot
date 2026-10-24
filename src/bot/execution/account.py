@@ -9,6 +9,9 @@ take-profit) and any dust. Nothing else may move these balances: reconciliation 
 against the ledger. Free USDT for the risk engine is the smaller of the bot's cash and the
 account's free USDT.
 
+On the real exchange (`cap_equity`) the risk engine never sizes on more than the capital: profits and
+any USDT someone deposits do not make trades bigger; losses do make them smaller.
+
 P&L periods, the drawdown index and the operating modes work as in the paper account (same
 classes), and are saved after every change. Fail closed: a restart restores the account with
 entries blocked and every breaker kept; an unreadable file is an error and is never reset.
@@ -52,9 +55,11 @@ class TradingAccount:
     started_at: float
     started_by: str
     fee_rate: Decimal = Decimal("0.001")
+    cap_equity: bool = False               # live: the risk engine sees min(equity, capital)
     index: EquityIndex = field(default_factory=EquityIndex)
     periods: PeriodTracker = field(default_factory=PeriodTracker)
     modes: ModeController = field(init=False)
+    last_equity: Decimal | None = field(default=None, init=False)   # the true equity at the last mark
 
     def __post_init__(self) -> None:
         self.modes = ModeController(self.cfg)            # starts ENTRIES_BLOCKED
@@ -62,7 +67,8 @@ class TradingAccount:
     # ------------------------------------------------------------ start, save, load
     @staticmethod
     def begin(directory: Path, cfg: AppConfig, ledger: Ledger, totals: dict[str, Decimal], free_usdt: Decimal,
-              capital: Decimal, operator: str, now: float, fee_rate: Decimal = Decimal("0.001")) -> "TradingAccount":
+              capital: Decimal, operator: str, now: float, fee_rate: Decimal = Decimal("0.001"),
+              cap_equity: bool = False, max_capital: Decimal | None = None) -> "TradingAccount":
         """Start the account. Only with a baseline, nothing open, and the capital available in free USDT."""
         path = Path(directory) / ACCOUNT_FILE
         capital = D(capital)
@@ -76,8 +82,10 @@ class TradingAccount:
             raise AccountError("a trade is PENDING or OPEN in the ledger; reconcile it first")
         if capital <= 0 or capital > free_usdt:
             raise AccountError(f"capital must be positive and at most the free USDT ({free_usdt})")
+        if max_capital is not None and capital > max_capital:
+            raise AccountError(f"capital {capital} is above the ceiling of {max_capital} USDT")
         start = {a: D(totals.get(a, ZERO)) for a in sorted({QUOTE, *ledger.baseline})}
-        acct = TradingAccount(path, cfg, capital, start, now, operator.strip(), D(fee_rate))
+        acct = TradingAccount(path, cfg, capital, start, now, operator.strip(), D(fee_rate), cap_equity)
         acct.index.start(capital)
         acct.periods.update(as_utc(now), capital)
         acct.save()
@@ -86,6 +94,7 @@ class TradingAccount:
     def save(self) -> None:
         body = {"version": VERSION, "capital": str(self.capital), "start": {a: str(q) for a, q in self.start.items()},
                 "started_at": self.started_at, "started_by": self.started_by, "fee_rate": str(self.fee_rate),
+                "cap_equity": self.cap_equity,
                 "index": {"units": str(self.index.units), "value_per_unit": str(self.index.value_per_unit),
                           "peak_value_per_unit": str(self.index.peak_value_per_unit)},
                 "periods": {"day_anchor": _iso(self.periods.day_anchor), "week_anchor": _iso(self.periods.week_anchor),
@@ -113,7 +122,7 @@ class TradingAccount:
             if d.get("version") != VERSION:
                 raise AccountError(f"account file version {d.get('version')!r}, expected {VERSION}")
             acct = TradingAccount(path, cfg, D(d["capital"]), {a: D(q) for a, q in d["start"].items()},
-                                  float(d["started_at"]), d["started_by"], D(d["fee_rate"]))
+                                  float(d["started_at"]), d["started_by"], D(d["fee_rate"]), bool(d.get("cap_equity")))
             ix, pr, md = d["index"], d["periods"], d["modes"]
             acct.index.units, acct.index.value_per_unit, acct.index.peak_value_per_unit = (
                 D(ix["units"]), D(ix["value_per_unit"]), D(ix["peak_value_per_unit"]))
@@ -161,6 +170,7 @@ class TradingAccount:
         """Mark equity (P&L periods, drawdown, breakers) and return what the risk engine sees.
         `entries_ok` False (this round's reconciliation was not clean) blocks entries for this round only."""
         equity = self.equity(totals, bids)
+        self.last_equity = equity
         events = self.periods.update(as_utc(now), equity)
         self.index.mark(equity)
         state = self._state(ledger, equity, totals, free_usdt, bids, corr_groups, entries_ok)
@@ -186,7 +196,8 @@ class TradingAccount:
             positions.append(OpenPosition(symbol=t.symbol, qty=t.received_qty, avg_entry=t.entry_price,
                                           stop_price=t.stop_price, current_bid=bid,
                                           corr_group=corr_groups.get(t.symbol, "majors")))
-        return AccountState(mode=mode, equity=equity, free_quote=max(ZERO, min(self.cash(totals), D(free_usdt))),
+        sized_on = min(equity, self.capital) if self.cap_equity else equity
+        return AccountState(mode=mode, equity=sized_on, free_quote=max(ZERO, min(self.cash(totals), D(free_usdt))),
                             day_start_equity=self.periods.day_start_equity,
                             week_start_equity=self.periods.week_start_equity,
                             daily_pnl=self.periods.daily_pnl(equity), weekly_pnl=self.periods.weekly_pnl(equity),

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Short form of "bot live ..." (REAL money) for the server console. Works as root or as the bot user;
+# always runs as the bot user, never as root. Installed to /usr/local/bin/live by
+# scripts/install_live_service.sh.
+#
+#   live status
+#   live check                 # the trading key, the account, a TEST order; nothing is traded
+#   live resume --operator Sultan --reason "..."
+#   live block  --operator Sultan --reason "..."
+#   live log [lines]           # the service log (default 30 lines)
+set -euo pipefail
+BOT_USER=bot
+
+if [[ "${1:-}" == "log" ]]; then
+  exec journalctl -u bot-live -n "${2:-30}" --no-pager
+fi
+if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  sed -n '6,10p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+run='cd "$HOME/crypto-bot" && cfg=config/live.yaml && { [[ -f $cfg ]] || cfg=config/default.yaml; } && exec .venv/bin/bot --config "$cfg" live "$@"'
+if [[ "$(id -un)" == "$BOT_USER" ]]; then
+  exec bash -c "$run" live "$@"
+fi
+exec sudo -u "$BOT_USER" -H bash -c "$run" live "$@"

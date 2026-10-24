@@ -424,6 +424,53 @@ bash /home/bot/crypto-bot/scripts/install_alerts_service.sh      # as root: star
 alerts test
 ```
 
+## Going live (module 5f; REAL money; Sultan only)
+
+The live mode is the testnet runner on the real exchange, with more locks. Nothing is bought or sold on
+the real exchange unless **all** of these hold, and only Sultan sets them:
+
+1. a separate **live trading key** (`BINANCE_LIVE_TRADE_*`) that can read and trade Spot and nothing
+   else: no withdrawals, no transfers, no margin, futures or options, and locked to the server's IP.
+   The bot reads the key's restrictions from Binance and refuses to start if the key can do more;
+2. a live config, `config/live.yaml` (never uploaded), that differs from `config/default.yaml` only in
+   `environment: live` and `live_trading: true`. The risk settings must stay the forward test's own;
+3. `BOT_LIVE_CONFIRM` in `.env` set to the exact phrase in `src/bot/core/config.py`
+   (`LIVE_CONFIRM_PHRASE`). Without both 2 and 3, the trading adapter refuses every order endpoint on
+   the real exchange (it can still read and send TEST orders, which Binance validates without trading);
+4. a live account started with a capped capital, at most `LIVE_CAPITAL_CEILING_USDT` (1,000 USDT, in
+   code). The risk engine sizes on the capital at most: profits, or USDT deposited later, never make a
+   trade bigger;
+5. entries resumed by Sultan (`live resume`).
+
+How much capital a trade needs: the risk engine risks 0.25% per trade and Binance's smallest order is
+5 USDT. Checked with the risk engine on Binance's BTCUSDT rules, the smallest capital that gets a protected
+BTC order through is 110 USDT with a stop 4% below the entry, 155 at 6%, 225 at 9% and 330 at 12% (H2b's
+stop is 3 daily ATRs). With less, every trade is rejected, correctly; the limits are never loosened.
+
+Steps, as the bot user unless marked root:
+
+```bash
+bash ~/crypto-bot/scripts/make_binance_key.sh --live-trading     # the live TRADING key; follow the steps
+cd ~/crypto-bot && .venv/bin/bot live check                       # key, account, a TEST order; trades nothing
+sed 's/^environment: paper/environment: live/' config/default.yaml > config/live.yaml
+nano config/live.yaml        # Sultan: change live_trading: false to true himself
+nano .env                    # Sultan: set BOT_LIVE_CONFIRM= to the phrase in src/bot/core/config.py
+.venv/bin/bot --config config/live.yaml live check                # now says: Live switch .... ON
+.venv/bin/bot --config config/live.yaml live baseline --operator Sultan --reason "my own coins, not the bot's"
+.venv/bin/bot --config config/live.yaml live start --operator Sultan --capital 300
+# as root:
+bash /home/bot/crypto-bot/scripts/install_live_service.sh         # starts bot-live; entries blocked
+live resume --operator Sultan --reason "..."
+live status
+```
+
+While the live runner runs, do not trade BTC, ETH, XRP, BNB or move USDT in the same Binance account by
+hand: reconciliation would block entries, and a USDT deposit or withdrawal would distort the bot's
+equity (a withdrawal can trip the drawdown breaker). To stop at once: `systemctl stop bot-live` (as
+root); open trades keep their stop-loss and take-profit on Binance. `live block` stops new entries
+only. Removing `BOT_LIVE_CONFIRM` or setting `live_trading: false` stops the runner from starting
+again. Telegram alerts cover the live runner too.
+
 ## How a trade is sized
 
 1. Entry is assumed to fill slightly worse than planned (0.05%), and the stop
@@ -543,6 +590,7 @@ limit, the only way to trade again is a deliberate config change, up to the 10% 
    strategies in the paper runner and the forward test (start, run, status, end-of-test report) are
    done; H2b passed the walk-forward check (23 Oct 2026); the forward test is Sultan's to start
 5. Order execution on the testnet: 5a trading adapter, 5b protected entries (gate met: 5 clean
-   round trips), 5c reconciliation, 5d the testnet runner and 5e Telegram alerts done
+   round trips), 5c reconciliation, 5d the testnet runner, 5e Telegram alerts and 5f the live mode
+   (off until Sultan switches it on) done
 6. Dashboard and Telegram alerts
 7. News and AI analysis (advisory only)

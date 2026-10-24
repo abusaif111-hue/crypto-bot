@@ -70,11 +70,11 @@ def trader(client):
 
 
 # ---------------------------------------------------------------- testnet only, allow-listed endpoints
-@pytest.mark.parametrize("env", ["live", "paper", "sim"])
-def test_orders_only_on_the_testnet(env):
+@pytest.mark.parametrize("env", ["paper", "sim", "demo"])
+def test_orders_only_on_the_testnet_or_live(env):
     with pytest.raises(ExchangeError, match="only on the Binance testnet"):
         BinanceTrader(environment=env, client=FakeClient())
-    with pytest.raises(ExchangeError, match="testnet trading key"):
+    with pytest.raises(ExchangeError, match="trading key"):
         BinanceTrader(environment="testnet")
 
 
@@ -202,7 +202,12 @@ def test_account_and_the_key_check():
     assert info.balances[0].total == Dec(10000) and len(info.balances) == 1
     ok = check_trading_account(info, "testnet")
     assert ok.safe and "cannot be read here" in ok.notes[0]
-    assert not check_trading_account(info, "live").safe                    # live: a key that can withdraw is a stop
+    # Live: the account's own canWithdraw is not the key's; the key's restrictions decide (and must pass too).
+    live = check_trading_account(info, "live")
+    assert live.safe and "this key must not" in live.notes[0]
+    from bot.exchange.binance import trading_key_problems
+    assert any("enableWithdrawals is ON" in p for p in trading_key_problems(
+        {"enableReading": True, "enableSpotAndMarginTrading": True, "ipRestrict": True, "enableWithdrawals": True}))
     for bad in (AccountInfo(False, False, "SPOT", ("SPOT",), ()), AccountInfo(True, False, "MARGIN", (), ()),
                 AccountInfo(True, False, "SPOT", ("SPOT", "MARGIN"), ())):
         assert not check_trading_account(bad, "testnet").safe
