@@ -126,6 +126,14 @@ bot paper status
    (🔴/🟡/🟢, repeats held back, short outages swallowed, silence and a daily check reported). It imports
    nothing from `bot` (it cannot trade); the token is typed hidden by `bot alerts setup`, kept in `.env`,
    and scrubbed from every error.
+   5f done (live mode, OFF until Sultan switches it on): `BinanceTrader(environment="live")` reads and sends
+   test orders, but its order endpoints need a `LiveAuthorization`, made only by `authorize_live()` from the
+   config (environment live, live_trading true) AND `BOT_LIVE_CONFIRM`. Separate live trading key
+   (`BINANCE_LIVE_TRADE_*`; `trading_key_problems` refuses one that can withdraw, transfer or use margin);
+   `config/live.yaml` (not in git) may differ from default.yaml only in the switch; the live account
+   (`~/live`, service `bot-live`) is capped at `LIVE_CAPITAL_CEILING_USDT` and sizes on the capital at most.
+   `bot live check|baseline|reconcile|start|run|status|resume|block`. Never write live.yaml, the phrase or
+   `live_trading: true` anywhere (a test checks the repo); never raise the ceiling without Sultan.
    **Sultan's decision (23 Oct 2026):** after the testnet gate (5 clean round trips), go live with a small,
    capped amount without waiting for the paper review; the H2b forward test keeps running. Sultan sets the
    cap and flips the live switch himself (1 USDT, his first figure, is below Binance's 5 USDT minimum order).

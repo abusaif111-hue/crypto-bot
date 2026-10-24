@@ -4,6 +4,7 @@
 # Run as the "bot" user:
 #     bash ~/crypto-bot/scripts/make_binance_key.sh --live-read-only   # the live READ-ONLY key
 #     bash ~/crypto-bot/scripts/make_binance_key.sh --testnet          # the SPOT TESTNET trading key (fake money)
+#     bash ~/crypto-bot/scripts/make_binance_key.sh --live-trading     # the live TRADING key (real money; Spot only)
 # Any other option, or none, is refused, so a typo can never overwrite the wrong key.
 #
 # The private key is generated here and never leaves this server. You copy only
@@ -21,14 +22,18 @@ case "${1:-}" in
   --live-read-only)
     KEY_FILE="${SECRETS_DIR}/binance_ed25519.pem"
     VAR_PREFIX=BINANCE ;;
+  --live-trading)
+    KEY_FILE="${SECRETS_DIR}/binance_live_trade_ed25519.pem"
+    VAR_PREFIX=BINANCE_LIVE_TRADE ;;
   *)
     echo "Say which key to set up (nothing was changed):" >&2
     echo "  bash $0 --testnet          # the SPOT TESTNET trading key (fake money)" >&2
     echo "  bash $0 --live-read-only   # the live READ-ONLY key (real Binance, reading only)" >&2
+    echo "  bash $0 --live-trading     # the live TRADING key (real Binance, Spot trading only)" >&2
     exit 1 ;;
 esac
 if [[ $# -ne 1 ]]; then
-  echo "Give exactly one option: --testnet or --live-read-only. Nothing was changed." >&2
+  echo "Give exactly one option: --testnet, --live-read-only or --live-trading. Nothing was changed." >&2
   exit 1
 fi
 
@@ -65,6 +70,20 @@ STEP 2. Open https://testnet.binance.vision and log in with GitHub.
         paste the public key above.
 STEP 3. Make sure trading is enabled for this testnet key.
 STEP 4. The testnet then shows an API key. Paste it below.
+------------------------------------------------------------------
+EOF
+elif [[ "$VAR_PREFIX" == BINANCE_LIVE_TRADE ]]; then
+cat <<'EOF'
+------------------------------------------------------------------
+LIVE TRADING KEY (REAL MONEY). A separate key from the read-only one.
+STEP 2. In Binance: API Management > Create API > Self-generated.
+        Name it e.g. "crypto-bot trading". Paste the public key above.
+STEP 3. Permissions: "Enable Reading" and "Enable Spot & Margin
+        Trading" ONLY. Leave withdrawals, internal transfer,
+        universal transfer, margin, futures and options OFF.
+        Restrict access to trusted IPs: enter this server's IP.
+        The bot refuses to trade with a key that can do more.
+STEP 4. Binance then shows an API key. Paste it below.
 ------------------------------------------------------------------
 EOF
 else
@@ -108,6 +127,8 @@ unset API_KEY
 echo "Saved as ${VAR_PREFIX}_API_KEY. $ENV_FILE is readable only by this user and is never uploaded to GitHub."
 if [[ "$VAR_PREFIX" == BINANCE_TESTNET ]]; then
   echo "Next: run  bot check-trading  to confirm the testnet key works (it places no order)."
+elif [[ "$VAR_PREFIX" == BINANCE_LIVE_TRADE ]]; then
+  echo "Next: run  bot live check  to confirm the key can trade Spot and nothing else (it places no order)."
 else
   echo "Next: run  bot check-binance  to confirm the key is read-only and working."
 fi

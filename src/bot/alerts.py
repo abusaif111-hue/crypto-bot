@@ -42,7 +42,7 @@ STATE_FILE = "alerts-state.json"
 API = "https://api.telegram.org"
 
 # Journals the alert service reads: name shown in messages -> folder (under the bot user's home).
-SOURCES = {"testnet": "testnet", "paper": "paper", "forward": "forward-h2b"}
+SOURCES = {"live": "live", "testnet": "testnet", "paper": "paper", "forward": "forward-h2b"}
 JOURNAL = "journal.jsonl"
 _DELAYED = {"entries_paused": "entries_unpaused", "market_data_down": "market_data_back"}
 

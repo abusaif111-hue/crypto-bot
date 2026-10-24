@@ -8,6 +8,7 @@
     bot reconcile [--set-baseline --operator NAME --reason "..."]   (testnet ledger vs account; places nothing)
     bot testnet start | run | status | resume | block     (H2b on the testnet: real orders, fake money)
     bot alerts setup | test | run                         (Telegram alerts)
+    bot live check | baseline | reconcile | start | run | status | resume | block   (REAL money; Sultan's switch)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
     bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b)
@@ -379,30 +380,72 @@ def _reconcile(book, trader, reader, out, label: str, record: bool = True):
     return rec
 
 
+# The two exchanges the bot can trade on. Live needs its own trading key AND Sultan's live switch.
+_VENUES = {
+    "testnet": {"prefix": "BINANCE_TESTNET", "label": "TESTNET (fake money; testnet.binance.vision)",
+                "money": "testnet money", "cmd": "testnet"},
+    "live": {"prefix": "BINANCE_LIVE_TRADE", "label": "LIVE (REAL MONEY; api.binance.com)",
+             "money": "REAL money", "cmd": "live"},
+}
+DEFAULT_LIVE_DIR = "~/live"
+
+
+def _env(args: argparse.Namespace) -> str:
+    return getattr(args, "env", "testnet")
+
+
+def _live_environ() -> dict:
+    """The environment plus .env, where Sultan puts BOT_LIVE_CONFIRM himself."""
+    from bot.exchange.credentials import env_path, read_env_file
+
+    return {**read_env_file(env_path()), **os.environ}
+
+
+def _venue(env: str, cfg, make_trader=None, make_reader=None, load_creds=None, need_switch: bool = False):
+    """(trader, reader) for the exchange. Live: a trader without the live switch can only read and send
+    test orders; with `need_switch` the switch must be on (LiveTradingNotConfirmed otherwise)."""
+    from bot.exchange.binance import BinanceReadOnly
+    from bot.exchange.credentials import load_credentials
+    from bot.exchange.trading import BinanceTrader, authorize_live
+
+    creds = (load_creds or (lambda: load_credentials(prefix=_VENUES[env]["prefix"])))()
+    kw = {}
+    if env == "live" and need_switch:
+        kw["authorization"] = authorize_live(cfg, _live_environ())
+    trader = (make_trader or BinanceTrader)(environment=env, credentials=creds, **kw)
+    reader = (make_reader or BinanceReadOnly)(environment=env, credentials=creds if env == "live" else None)
+    return trader, reader
+
+
+def _live_key_problems(reader) -> list:
+    """The live trading key's own restrictions: Spot trading only, locked to trusted IPs."""
+    from bot.exchange.binance import trading_key_problems
+
+    return trading_key_problems(reader.key_permissions().raw)
+
+
 def _reconcile_cmd(args: argparse.Namespace, make_trader=None, make_reader=None, load_creds=None, out=None) -> int:
-    """Compare the testnet ledger with the testnet account; or record a new baseline (operator).
+    """Compare the ledger with the exchange account; or record a new baseline (operator).
     Exit codes: 0 clean (or baseline recorded), 1 not clean, 2 setup problem, 3 coins unprotected."""
-    from bot.exchange.binance import BinanceReadOnly, ExchangeError
-    from bot.exchange.credentials import CredentialsError, load_credentials
-    from bot.exchange.trading import BinanceTrader
+    from bot.exchange.binance import ExchangeError
+    from bot.exchange.credentials import CredentialsError
     from bot.execution.ledger import Ledger, LedgerError
 
     out = out or sys.stdout
+    env = _env(args)
     cfg = load_config(args.config)
     journal_dir = Path(os.path.expanduser(args.journal_dir))
-    load_creds = load_creds or (lambda: load_credentials(prefix="BINANCE_TESTNET"))
-    out.write(f"Reconciliation: testnet ledger ({journal_dir}) vs the testnet account (read-only; places nothing)\n")
+    out.write(f"Reconciliation: {env} ledger ({journal_dir}) vs the {_VENUES[env]['label']} account "
+              f"(read-only; places nothing)\n")
     try:
-        creds = load_creds()
-        book = Ledger.load(journal_dir, "testnet")
-    except (CredentialsError, LedgerError) as e:
+        book = Ledger.load(journal_dir, env)
+        trader, reader = _venue(env, cfg, make_trader, make_reader, load_creds)
+    except (CredentialsError, LedgerError, ExchangeError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
-    trader = (make_trader or BinanceTrader)(environment="testnet", credentials=creds)
-    reader = (make_reader or BinanceReadOnly)(environment="testnet")
     if args.set_baseline:
         if _runner_active(journal_dir):
-            print("Error: the testnet runner is running; stop it before recording a baseline", file=sys.stderr)
+            print(f"Error: the {env} runner is running; stop it before recording a baseline", file=sys.stderr)
             return 2
         if not args.operator or not args.reason:
             print("Error: --set-baseline needs --operator and --reason", file=sys.stderr)
@@ -410,7 +453,7 @@ def _reconcile_cmd(args: argparse.Namespace, make_trader=None, make_reader=None,
         assets = sorted({s[:-4] for s in [*cfg.universe, *args.symbols]})
         try:
             if trader.open_orders(None):
-                print("Error: the testnet account has open orders; a baseline is recorded only with none open",
+                print(f"Error: the {env} account has open orders; a baseline is recorded only with none open",
                       file=sys.stderr)
                 return 2
             totals = {b.asset: b.total for b in trader.account().balances}
@@ -424,12 +467,13 @@ def _reconcile_cmd(args: argparse.Namespace, make_trader=None, make_reader=None,
         out.write(f"Result: BASELINE RECORDED ({book.baseline_note}).\n")
         return 0
     if not book.baseline:
-        print("Error: no baseline yet: bot reconcile --set-baseline --operator NAME --reason \"...\"", file=sys.stderr)
+        print(f"Error: no baseline yet: bot {'live baseline' if env == 'live' else 'reconcile --set-baseline'} "
+              f"--operator NAME --reason \"...\"", file=sys.stderr)
         return 2
     running = _runner_active(journal_dir)
     rec = _reconcile(book, trader, reader, out, "Account", record=not running)
     if running:
-        out.write("  Note ........... the testnet runner is running: it records what reconciliation finds; "
+        out.write(f"  Note ........... the {env} runner is running: it records what reconciliation finds; "
                   "this check only reports\n")
     for c in rec.checked:
         out.write(f"    OK: {c}\n")
@@ -442,72 +486,153 @@ def _reconcile_cmd(args: argparse.Namespace, make_trader=None, make_reader=None,
     return 0 if rec.clean else 1
 
 
+def _live_check(args: argparse.Namespace, make_trader=None, make_reader=None, load_creds=None, out=None) -> int:
+    """Before Sultan switches live on: the live trading key, the account, a TEST order (validated by Binance,
+    never placed) and the state of the live switch. Nothing is bought or sold.
+    Exit codes: 0 ready, 2 setup problem, 3 unsafe key, 4 Binance error or refused test order."""
+    from bot.core.config import LIVE_CAPITAL_CEILING_USDT, LiveTradingNotConfirmed
+    from bot.core.ids import client_order_id, new_intent_id
+    from bot.core.money import floor_price, floor_to_step
+    from bot.exchange.binance import ExchangeError
+    from bot.exchange.credentials import CredentialsError
+    from bot.exchange.trading import OrderRejected, OrderRequest, authorize_live, check_trading_account
+
+    out = out or sys.stdout
+    cfg = load_config(args.config)
+    out.write("Binance LIVE trading check (REAL MONEY account; nothing is bought or sold)\n")
+    try:
+        trader, reader = _venue("live", cfg, make_trader, make_reader, load_creds)
+    except CredentialsError as e:
+        out.write(f"  Trading key .... NOT READY: {e}\n")
+        return 2
+    try:
+        skew = reader.clock_skew_ms()
+        out.write(f"  Clock .......... {'OK' if abs(skew) <= cfg.risk.max_clock_skew_ms else 'PROBLEM'}: {skew:+d} ms\n")
+        problems = _live_key_problems(reader)
+        if problems:
+            out.write("  Trading key .... STOP, this key may do more than trade Spot:\n")
+            for p in problems:
+                out.write(f"                   - {p}\n")
+            out.write("                   Fix it in Binance > API Management > Edit restrictions, then run this again.\n")
+            return 3
+        out.write("  Trading key .... SAFE: reading and Spot trading only; no withdrawals or transfers; trusted IPs\n")
+        info = trader.account()
+        check = check_trading_account(info, "live")
+        if not check.safe:
+            out.write("  Account ........ STOP:\n")
+            for p in check.problems:
+                out.write(f"                   - {p}\n")
+            return 3
+        for n in check.notes:
+            out.write(f"  Note ........... {n}\n")
+        usdt = next((b.free for b in info.balances if b.asset == "USDT"), D(0))
+        out.write(f"  Balances ....... {usdt:,.2f} USDT free (REAL money)\n")
+        rules = reader.symbol_rules(["BTCUSDT"])["BTCUSDT"]
+        bid = reader.books(["BTCUSDT"])["BTCUSDT"].bid
+        price = floor_price(bid * D("0.9"), rules.tick_size)               # far below the market: test only
+        qty = floor_to_step(max(rules.min_notional, D(5)) * 2 / price, rules.step_size)
+        trader.test_order(OrderRequest("BTCUSDT", "BUY", "LIMIT", qty, client_order_id(new_intent_id(), "entry"),
+                                       price=price, time_in_force="GTC"), rules)
+        out.write(f"  Test order ..... OK: Binance accepted a test LIMIT BUY {plain(qty)} BTCUSDT at {plain(price)} "
+                  f"(validated only, not placed)\n")
+    except OrderRejected as e:
+        out.write(f"  Test order ..... REFUSED: {e}\n")
+        return 4
+    except ExchangeError as e:
+        out.write(f"  Binance ........ ERROR: {e}\n")
+        return 4
+    try:
+        authorize_live(cfg, _live_environ())
+        switch = "ON (config live_trading true and BOT_LIVE_CONFIRM set)"
+    except LiveTradingNotConfirmed as e:
+        switch = f"OFF: {e}"
+    out.write(f"  Live switch .... {switch}\n")
+    out.write(f"  Capital ceiling  {fmt(LIVE_CAPITAL_CEILING_USDT)} USDT (in code)\n")
+    out.write("Result: THE LIVE TRADING KEY WORKS. Nothing was bought or sold.\n")
+    return 0
+
+
 def _testnet_start(args: argparse.Namespace, make_trader=None, make_reader=None, load_creds=None, out=None) -> int:
-    """Start the testnet runner's account once: a capped capital, with nothing open and reconciliation clean."""
-    from bot.exchange.binance import BinanceReadOnly, ExchangeError
-    from bot.exchange.credentials import CredentialsError, load_credentials
-    from bot.exchange.trading import BinanceTrader
+    """Start the runner's account once: a capped capital, with nothing open and reconciliation clean.
+    Live: only with the live switch on, within the capital ceiling, and the risk engine sizes on the capital
+    at most."""
+    from bot.core.config import LIVE_CAPITAL_CEILING_USDT, LiveTradingNotConfirmed
+    from bot.exchange.binance import ExchangeError
+    from bot.exchange.credentials import CredentialsError
     from bot.execution.account import AccountError, TradingAccount
     from bot.execution.ledger import Ledger, LedgerError
 
     out = out or sys.stdout
+    env = _env(args)
+    v = _VENUES[env]
     cfg = load_config(args.config)
     state_dir = Path(os.path.expanduser(args.state_dir))
-    load_creds = load_creds or (lambda: load_credentials(prefix="BINANCE_TESTNET"))
-    out.write(f"Testnet runner account in {state_dir} (fake money; testnet.binance.vision)\n")
+    out.write(f"{v['cmd'].capitalize()} runner account in {state_dir} ({v['label']})\n")
     try:
-        creds = load_creds()
-        book = Ledger.load(state_dir, "testnet")
-        trader = (make_trader or BinanceTrader)(environment="testnet", credentials=creds)
-        reader = (make_reader or BinanceReadOnly)(environment="testnet")
+        book = Ledger.load(state_dir, env)
+        trader, reader = _venue(env, cfg, make_trader, make_reader, load_creds, need_switch=(env == "live"))
+        if env == "live":
+            problems = _live_key_problems(reader)
+            if problems:
+                raise AccountError("the live trading key may do more than trade Spot: " + "; ".join(problems))
         rec = _reconcile(book, trader, reader, out, "Before start")
         if not rec.clean:
-            out.write("Result: NOT started: reconciliation must be clean first (bot reconcile).\n")
+            out.write(f"Result: NOT started: reconciliation must be clean first (bot {v['cmd']} reconcile).\n")
             return 2
         info = trader.account()
         totals = {b.asset: b.total for b in info.balances}
         free = next((b.free for b in info.balances if b.asset == "USDT"), D(0))
-        acct = TradingAccount.begin(state_dir, cfg, book, totals, free, D(args.capital), args.operator, time.time())
-    except (CredentialsError, LedgerError, AccountError, ExchangeError) as e:
+        acct = TradingAccount.begin(state_dir, cfg, book, totals, free, D(args.capital), args.operator, time.time(),
+                                    cap_equity=(env == "live"),
+                                    max_capital=LIVE_CAPITAL_CEILING_USDT if env == "live" else None)
+    except (CredentialsError, LedgerError, AccountError, ExchangeError, LiveTradingNotConfirmed) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
-    out.write(f"  Capital ........ {acct.capital:,.2f} USDT of testnet money (the account holds {free:,.2f} free)\n")
+    out.write(f"  Capital ........ {acct.capital:,.2f} USDT of {v['money']} (the account holds {free:,.2f} free)\n")
     out.write(f"  Watched ........ {', '.join(f'{a} {plain(q)}' for a, q in acct.start.items())} at the start\n")
-    out.write(f"Result: STARTED by {acct.started_by}. Entries stay blocked until: bot testnet resume\n")
+    out.write(f"Result: STARTED by {acct.started_by}. Entries stay blocked until: bot {v['cmd']} resume\n")
     return 0
 
 
 def _testnet_run(args: argparse.Namespace, make_trader=None, make_reader=None, make_live=None, load_creds=None,
                  out=None) -> int:
-    """The testnet runner (the bot-testnet service): H2b with the forward test's frozen settings and coins."""
+    """The runner service (bot-testnet, or bot-live with Sultan's live switch): H2b with the forward test's
+    frozen settings and coins."""
     from bot import forward
-    from bot.exchange.binance import BinanceReadOnly
-    from bot.exchange.credentials import CredentialsError, load_credentials
-    from bot.exchange.trading import BinanceTrader
+    from bot.core.config import Environment, LiveTradingNotConfirmed
+    from bot.exchange.binance import BinanceReadOnly, ExchangeError
+    from bot.exchange.credentials import CredentialsError
     from bot.execution.account import AccountError, TradingAccount
     from bot.execution.ledger import Ledger, LedgerError
     from bot.execution.runner import RunnerError, TestnetRunner
     from bot.market.data import MarketDataService
     from bot.paper.runner import RunnerLock, RunnerLocked
 
+    env = _env(args)
     base = load_config(args.config)
-    if base.live_trading:
+    if env == "testnet" and base.live_trading:
         print("Error: the testnet runner never runs with live_trading on", file=sys.stderr)
         return 2
+    if env == "live" and base.environment is not Environment.LIVE:
+        print("Error: the live runner needs the live config (--config config/live.yaml)", file=sys.stderr)
+        return 2
     state_dir = Path(os.path.expanduser(args.state_dir))
-    load_creds = load_creds or (lambda: load_credentials(prefix="BINANCE_TESTNET"))
     try:
         ft = forward.load(Path(os.path.expanduser(args.forward_dir)))
-        forward.check_unchanged(ft, base)
+        # The risk settings must be the forward test's own: the live config differs only in the live switch.
+        forward.check_unchanged(ft, base.model_copy(update={"environment": Environment.PAPER, "live_trading": False}))
         cfg = _forward_cfg(base, ft.symbols)
-        creds = load_creds()
-        trader = (make_trader or BinanceTrader)(environment="testnet", credentials=creds)
-        testnet = MarketDataService((make_reader or BinanceReadOnly)(environment="testnet"), cfg)
-        live = MarketDataService((make_live or BinanceReadOnly)(environment="live"), cfg)
+        trader, reader = _venue(env, cfg, make_trader, make_reader, load_creds, need_switch=(env == "live"))
+        if env == "live":
+            problems = _live_key_problems(reader)
+            if problems:
+                raise RunnerError("the live trading key may do more than trade Spot: " + "; ".join(problems))
+        exchange = MarketDataService(reader, cfg)
+        signals = MarketDataService((make_live or BinanceReadOnly)(environment="live"), cfg)
         with RunnerLock(state_dir):
             now = time.time()
-            runner = TestnetRunner(state_dir, cfg, trader, testnet, live, [forward.make_strategy(ft)],
-                                   dict(ft.corr_groups), Ledger.load(state_dir, "testnet"),
+            runner = TestnetRunner(state_dir, cfg, trader, exchange, signals, [forward.make_strategy(ft)],
+                                   dict(ft.corr_groups), Ledger.load(state_dir, env),
                                    TradingAccount.load(state_dir, cfg, now), out=out or sys.stdout)
 
             def stop(signum, frame):
@@ -519,14 +644,15 @@ def _testnet_run(args: argparse.Namespace, make_trader=None, make_reader=None, m
             finally:
                 for s, h in old.items():
                     signal.signal(s, h)
-    except (forward.ForwardError, CredentialsError, LedgerError, AccountError, RunnerError, RunnerLocked) as e:
+    except (forward.ForwardError, CredentialsError, LedgerError, AccountError, RunnerError, RunnerLocked,
+            LiveTradingNotConfirmed, ExchangeError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
     return 0
 
 
 def _testnet_status(args: argparse.Namespace, out=None) -> int:
-    """What the testnet runner is doing, from its files (no network)."""
+    """What the runner is doing, from its files (no network)."""
     import json
 
     from bot.execution.account import ACCOUNT_FILE
@@ -534,14 +660,16 @@ def _testnet_status(args: argparse.Namespace, out=None) -> int:
     from bot.execution.runner import JOURNAL_FILE
 
     out = out or sys.stdout
+    env = _env(args)
+    v = _VENUES[env]
     state_dir = Path(os.path.expanduser(args.state_dir))
     path = state_dir / ACCOUNT_FILE
     if not path.exists():
-        print(f"No testnet runner account in {state_dir} yet: bot testnet start --operator NAME", file=sys.stderr)
+        print(f"No {env} runner account in {state_dir} yet: bot {v['cmd']} start --operator NAME", file=sys.stderr)
         return 2
     try:
         acct = json.loads(path.read_text())
-        book = Ledger.load(state_dir, "testnet")
+        book = Ledger.load(state_dir, env)
     except (ValueError, OSError, LedgerError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
@@ -551,18 +679,20 @@ def _testnet_status(args: argparse.Namespace, out=None) -> int:
         for line in journal.read_text().splitlines():
             if '"event": "status"' in line:
                 last = json.loads(line)
-    out.write(f"Testnet runner in {state_dir} (fake money; testnet.binance.vision)\n")
+    out.write(f"{v['cmd'].capitalize()} runner in {state_dir} ({v['label']})\n")
     out.write(f"Runner: {'running' if _runner_active(state_dir) else 'NOT running'}; started by {acct['started_by']} "
               f"on {time.strftime('%Y-%m-%d', time.gmtime(acct['started_at']))}\n")
     out.write(f"Mode: {acct['modes']['mode']}" + (f" (active: {', '.join(acct['modes']['active_breaches'])})"
                                                    if acct['modes']['active_breaches'] else "") + "\n")
     capital = D(acct["capital"])
-    if last:
+    if last and last.get("equity") is not None:
         eq = D(last["equity"])
         out.write(f"Equity {fmt(eq)} USDT (capital {fmt(capital)}, {fmt(eq - capital)}), drawdown "
                   f"{fmt(D(last['drawdown_pct']))}%; as of {time.strftime('%Y-%m-%d %H:%M', time.gmtime(last['at']))} UTC\n")
     else:
         out.write(f"Capital {fmt(capital)} USDT; no equity mark yet\n")
+    if acct.get("cap_equity"):
+        out.write(f"Trades are sized on at most the capital ({fmt(capital)} USDT)\n")
     trades = list(book.trades.values())
     by = {k: [t for t in trades if t.status == k] for k in (PENDING, OPEN, CLOSED, NOT_OPENED)}
     out.write(f"Trades: {len(by[OPEN])} open, {len(by[PENDING])} pending, {len(by[CLOSED])} closed, "
@@ -1281,6 +1411,31 @@ def main(argv: list[str] | None = None) -> int:
         q.add_argument("--reason", required=True, help="10+ characters")
     for q in tsub.choices.values():
         q.add_argument("--state-dir", default=DEFAULT_TESTNET_DIR, help="ledger and account folder")
+        q.set_defaults(env="testnet")
+    lv = sub.add_parser("live", help="LIVE trading with REAL money: only with Sultan's live switch")
+    lsub = lv.add_subparsers(dest="live_cmd", required=True)
+    lsub.add_parser("check", help="the live trading key, the account and a TEST order (nothing is traded)")
+    lb = lsub.add_parser("baseline", help="record the coins in the account that are not the bot's")
+    lb.add_argument("--operator", required=True)
+    lb.add_argument("--reason", required=True, help="10+ characters")
+    lb.add_argument("--symbols", nargs="*", default=["BTCUSDT", "ETHUSDT", "XRPUSDT", "BNBUSDT"])
+    lsub.add_parser("reconcile", help="compare the live ledger with the live account (places nothing)")
+    lst = lsub.add_parser("start", help="once, with the live switch on: start the live account with your cap")
+    lst.add_argument("--operator", required=True)
+    lst.add_argument("--capital", required=True, help="USDT of REAL money the bot may trade with")
+    lrn = lsub.add_parser("run", help="run until stopped (used by the bot-live service)")
+    lrn.add_argument("--interval", type=float, default=60.0, help="seconds between rounds")
+    lrn.add_argument("--ticks", type=int, default=None, help=argparse.SUPPRESS)
+    lrn.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
+    lsub.add_parser("status", help="mode, equity, open trades (from the runner's files)")
+    for name, help_ in (("resume", "allow new entries (refused while a breaker or fault is active)"),
+                        ("block", "block new entries; exits keep working")):
+        q = lsub.add_parser(name, help=help_)
+        q.add_argument("--operator", required=True)
+        q.add_argument("--reason", required=True, help="10+ characters")
+    for q in lsub.choices.values():
+        q.add_argument("--state-dir", default=DEFAULT_LIVE_DIR, help="live ledger and account folder")
+        q.set_defaults(env="live")
     al = sub.add_parser("alerts", help="Telegram alerts: set up, test, run (the bot-alerts service)")
     asub = al.add_subparsers(dest="alerts_cmd", required=True)
     asub.add_parser("setup", help="connect your Telegram (the token is typed hidden; nothing secret is shown)")
@@ -1374,6 +1529,16 @@ def main(argv: list[str] | None = None) -> int:
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
         if args.cmd == "alerts":
             return {"setup": _alerts_setup, "test": _alerts_test, "run": _alerts_run}[args.alerts_cmd](args)
+        if args.cmd == "live":
+            if args.live_cmd in ("baseline", "reconcile"):
+                args.journal_dir = args.state_dir
+                args.set_baseline = args.live_cmd == "baseline"
+                if not args.set_baseline:
+                    args.operator = args.reason = None
+                    args.symbols = []
+                return _reconcile_cmd(args)
+            return {"check": _live_check, "start": _testnet_start, "run": _testnet_run, "status": _testnet_status,
+                    "resume": _paper_request("resume"), "block": _paper_request("block")}[args.live_cmd](args)
         if args.cmd == "testnet":
             return {"start": _testnet_start, "run": _testnet_run, "status": _testnet_status,
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.testnet_cmd](args)

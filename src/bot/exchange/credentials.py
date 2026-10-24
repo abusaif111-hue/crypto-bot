@@ -15,6 +15,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+_KEY_SCRIPT_OPTION = {"BINANCE_TESTNET": "--testnet", "BINANCE_LIVE_TRADE": "--live-trading"}
+
+
 class CredentialsError(RuntimeError):
     pass
 
@@ -70,8 +73,7 @@ def load_credentials(env_file: Path | None = None, environ: dict[str, str] | Non
     if not api_key:
         raise CredentialsError(
             f"{key_name} is not set (looked in the environment and {env_path}). "
-            f"Run scripts/make_binance_key.sh {'--testnet' if prefix == 'BINANCE_TESTNET' else '--live-read-only'} "
-            f"to store it.")
+            f"Run scripts/make_binance_key.sh {_KEY_SCRIPT_OPTION.get(prefix, '--live-read-only')} to store it.")
     if not api_key.isalnum() or not 16 <= len(api_key) <= 128:
         raise CredentialsError(f"{key_name} does not look like a Binance API key (letters and digits only)")
     if not key_path:

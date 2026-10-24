@@ -53,6 +53,33 @@ FORBIDDEN_PERMISSIONS = (
 WARN_PERMISSIONS = ("enableInternalTransfer", "permitsUniversalTransfer")
 ALLOWED_PERMISSIONS = ("enableReading", "enableFixReadOnly")
 
+# A live TRADING key (module 5f) may read and trade Spot, and nothing else: no withdrawals, no transfers (not
+# even between your own wallets), no margin, futures, options or FIX trading, and it must be locked to trusted IPs.
+TRADING_KEY_FORBIDDEN = (
+    "enableWithdrawals", "enableMargin", "enableFutures", "enableVanillaOptions", "enablePortfolioMarginTrading",
+    "enableFixApiTrade", "enableInternalTransfer", "permitsUniversalTransfer",
+)
+
+
+def trading_key_problems(raw: dict[str, Any]) -> list[str]:
+    """What is wrong with a live trading key's restrictions (GET /sapi/v1/account/apiRestrictions); empty if safe."""
+    problems = []
+    if raw.get("enableReading") is not True:
+        problems.append("Enable Reading is off, so the bot cannot read the account")
+    if raw.get("enableSpotAndMarginTrading") is not True:
+        problems.append("Enable Spot & Margin Trading is off, so the key cannot trade")
+    if raw.get("ipRestrict") is not True:
+        problems.append("the key is not restricted to trusted IPs")
+    for name in TRADING_KEY_FORBIDDEN:
+        if raw.get(name) is True:
+            problems.append(f"{name} is ON; a trading key must have it off")
+    known = set(TRADING_KEY_FORBIDDEN) | {"enableReading", "enableSpotAndMarginTrading", "enableFixReadOnly"}
+    for name, value in raw.items():
+        if (name.startswith("enable") or name.startswith("permits")) and name not in known and value is True:
+            problems.append(f"{name} is on (a permission this bot does not know); turn it off")
+    return problems
+
+
 WEIGHT_SOFT_LIMIT = 4000   # Binance's limit is 6,000 request weight per minute; slow down well before it
 
 

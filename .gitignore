@@ -6,3 +6,4 @@ __pycache__/
 .pytest_cache/
 .hypothesis/
 *.egg-info/
+config/live.yaml

@@ -33,6 +33,9 @@ FLOORS: dict[str, Decimal] = {
     "min_reward_risk": Decimal("1.0"),          # R-10
 }
 
+# The most USDT the bot may ever trade with on the real exchange (bot live start --capital). In code, like the
+# ceilings above, so it cannot be raised from a file. Sultan chose to start small (23 Oct 2026).
+LIVE_CAPITAL_CEILING_USDT = Decimal("1000")
 LIVE_CONFIRM_ENV = "BOT_LIVE_CONFIRM"
 LIVE_CONFIRM_PHRASE = "I accept live trading risk"
 

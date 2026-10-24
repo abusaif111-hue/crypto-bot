@@ -1,9 +1,13 @@
-"""Binance Spot trading adapter (module 5a-5b): orders on the SPOT TESTNET only.
+"""Binance Spot trading adapter (module 5a-5b, live in 5f): orders on the SPOT TESTNET, or on the real
+exchange only with Sultan's live switch.
 
 Separate from the read-only adapter (`bot.exchange.binance`), which stays read-only. This
-class may call only the endpoints in TRADE_ENDPOINTS, and refuses any environment but the
-testnet: live orders need Sultan's live switch, a later module. Only `bot.execution` (and
-the `bot check-trading` command) may use it; every entry there goes through the risk engine.
+class may call only the endpoints in TRADE_ENDPOINTS. On the real exchange ("live") it can read the
+account and send TEST orders (Binance validates them without trading) with any trading key, but an
+endpoint that places or cancels an order needs a `LiveAuthorization`, which only `authorize_live()`
+makes, and only when the config says environment: live and live_trading: true AND BOT_LIVE_CONFIRM
+holds the exact phrase (`bot.core.config.assert_live_allowed`). Sultan sets both himself. Only
+`bot.execution` (and the CLI) may use this class; every entry there goes through the risk engine.
 
 Protected entries (5b) are one OPOCO order list: a BUY LIMIT fill-or-kill working order and,
 once it has fully filled, a SELL take-profit (LIMIT_MAKER) and a SELL stop-loss (STOP_LOSS, or
@@ -28,6 +32,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Callable, Protocol
 
+from bot.core.config import AppConfig, assert_live_allowed
 from bot.core.ids import is_valid_client_id
 from bot.core.money import D, is_multiple
 from bot.exchange.binance import HOSTS, ExchangeError
@@ -47,13 +52,33 @@ TRADE_ENDPOINTS: dict[tuple[str, str], int] = {
     ("POST", "/api/v3/orderList/opoco"): 1,
     ("DELETE", "/api/v3/orderList"): 1,
 }
-ENVIRONMENTS = ("testnet",)            # live: only with Sultan's live switch (a later module)
+ENVIRONMENTS = ("testnet", "live")     # live orders: only with Sultan's live switch (LiveAuthorization)
+# Endpoints that place or cancel an order: on the real exchange they need a LiveAuthorization.
+ORDER_ENDPOINTS = {("POST", "/api/v3/order"), ("DELETE", "/api/v3/order"), ("POST", "/api/v3/orderList/opoco"),
+                   ("DELETE", "/api/v3/orderList")}
+_LIVE_TOKEN = object()
 AMBIGUOUS_CODES = {-1006, -1007}       # "execution status unknown"
 NO_SUCH_ORDER = -2013
 CANCEL_REJECTED = -2011
 DUPLICATE_ORDER = "Duplicate order sent"
 TIME_IN_FORCE = ("GTC", "IOC", "FOK")
 FINAL_STATUSES = ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "EXPIRED_IN_MATCH")
+
+
+@dataclass(frozen=True)
+class LiveAuthorization:
+    """Proof that Sultan's live switch was on when the trader was made. Only `authorize_live()` makes one."""
+    _token: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._token is not _LIVE_TOKEN:
+            raise ExchangeError("a LiveAuthorization is made only by authorize_live()")
+
+
+def authorize_live(cfg: AppConfig, environ: dict[str, str] | None = None) -> LiveAuthorization:
+    """Raises LiveTradingNotConfirmed unless the config and the typed confirmation both say live."""
+    assert_live_allowed(cfg, environ)
+    return LiveAuthorization(_LIVE_TOKEN)
 
 
 class OrderRejected(ExchangeError):
@@ -259,6 +284,9 @@ class TradingKeyCheck:
 
 
 def check_trading_account(info: AccountInfo, environment: str) -> TradingKeyCheck:
+    """The account as GET /api/v3/account shows it. On the real exchange its permissions are the ACCOUNT's
+    (a normal account can withdraw and may have margin switched on); what this KEY may do is checked
+    separately from its restrictions (`bot.exchange.binance.trading_key_problems`), which must pass too."""
     problems, notes = [], []
     if not info.can_trade:
         problems.append("trading is not enabled for this key")
@@ -266,12 +294,16 @@ def check_trading_account(info: AccountInfo, environment: str) -> TradingKeyChec
         problems.append(f"account type is {info.account_type}, not SPOT")
     for p in info.permissions:
         if p in ("MARGIN", "LEVERAGED") or "FUTURES" in p:
-            problems.append(f"the account has the {p} permission; this bot trades Spot only")
+            if environment == "live":
+                notes.append(f"the account has {p} switched on; this key must have it off (checked from its "
+                             f"restrictions) and the bot trades Spot only")
+            else:
+                problems.append(f"the account has the {p} permission; this bot trades Spot only")
     if environment == "testnet":
         notes.append("testnet: key restrictions (withdrawals, trusted IPs) cannot be read here; testnet money is "
-                     "not real. The live key's restrictions are checked before any live order (later module).")
+                     "not real. The live key's restrictions are checked before any live order.")
     elif info.can_withdraw:
-        problems.append("the account can withdraw with this key")
+        notes.append("the account itself can withdraw; this key must not (checked from its restrictions)")
     return TradingKeyCheck(tuple(problems), tuple(notes))
 
 
@@ -284,19 +316,27 @@ class BinanceTrader:
     confirm_attempts: int = 3
     confirm_wait_s: float = 2.0
     _sleep: Callable[[float], None] = field(default=time.sleep, repr=False)
+    authorization: LiveAuthorization | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.environment not in ENVIRONMENTS:
-            raise ExchangeError(f"orders are allowed only on the Binance testnet in this version, not "
-                                f"'{self.environment}'; live trading needs Sultan's live switch (a later module)")
+            raise ExchangeError(f"orders are allowed only on the Binance testnet or, with Sultan's live switch, the "
+                                f"real exchange; not '{self.environment}'")
+        if self.authorization is not None and not isinstance(self.authorization, LiveAuthorization):
+            raise ExchangeError("authorization must come from authorize_live()")
         if self.client is None:
             if self.credentials is None:
-                raise ExchangeError("the trading adapter needs the testnet trading key (BINANCE_TESTNET_API_KEY)")
+                raise ExchangeError("the trading adapter needs a trading key (BINANCE_TESTNET_API_KEY on the testnet, "
+                                    "BINANCE_LIVE_TRADE_API_KEY live)")
             self.client = _sdk_trade_client(HOSTS[self.environment]["api"], self.credentials)
 
     def _call(self, method: str, endpoint: str, params: dict[str, Any] | None = None) -> Any:
         if (method, endpoint) not in TRADE_ENDPOINTS:
             raise ExchangeError(f"{method} {endpoint} is not an endpoint the trading adapter may call")
+        if self.environment == "live" and (method, endpoint) in ORDER_ENDPOINTS and \
+                not isinstance(self.authorization, LiveAuthorization):
+            raise ExchangeError(f"{method} {endpoint} on the real exchange needs Sultan's live switch: environment "
+                                f"live and live_trading true in the config, and BOT_LIVE_CONFIRM set")
         params = {k: v for k, v in (params or {}).items() if v is not None}
         try:
             return self.client.send(method, endpoint, params)

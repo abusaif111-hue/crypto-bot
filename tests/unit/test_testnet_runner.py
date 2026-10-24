@@ -284,9 +284,13 @@ def test_less_than_the_minimum_is_left_as_dust(world):
 
 
 # ---------------------------------------------------------------- the runner
-def test_the_runner_trades_on_the_testnet_only(world):
-    world.ex.environment = "live"
-    with pytest.raises(RunnerError, match="testnet only"):
+def test_the_runner_trades_live_only_with_the_live_switch(world):
+    world.ex.environment = "live"                              # no authorization on this trader
+    with pytest.raises(RunnerError, match="live switch"):
+        TestnetRunner(world.dir, world.cfg, world.ex, world.runner.exchange, world.runner.signals, [], {},
+                      world.runner.ledger, world.runner.account)
+    world.ex.environment = "paper"
+    with pytest.raises(RunnerError, match="not 'paper'"):
         TestnetRunner(world.dir, world.cfg, world.ex, world.runner.exchange, world.runner.signals, [], {},
                       world.runner.ledger, world.runner.account)
 
