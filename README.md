@@ -218,7 +218,13 @@ tail -f ~/backtests/run-h4.log
   1h candles, H4's own exits and the same number of random ideas per day as for the 4h strategies.
 - Same walk-forward and the same 7-check selection rule. If H4 fails any check it is dropped,
   not tuned. If it passes, the next step is its own forward test with simulated money
-  (`~/forward-h4`, built next), which only Sultan starts.
+  (`~/forward-h4`), which only Sultan starts.
+
+Result (24 Oct 2026, report `~/backtests/20261024-111331-strategy-H4`): the memory check chose BTC and
+ETH only; **H4 does not qualify** and is rejected as its plan says (not tuned, no forward test).
+Out of sample: 331 trades, −500.97 USDT, −1.51 USDT per trade, −5.68 with doubled costs. Its entries did
+no better than random entries with the same exits (−2.32 USDT per trade against a random median of
+−2.17). Fees over the whole research period: 465.52 USDT on 536 trades.
 
 ### Step 3: the holdout (Sultan only, once)
 
