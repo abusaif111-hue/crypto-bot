@@ -326,3 +326,16 @@ def test_the_monitor_cannot_trade():
     assert not any(m.startswith(("bot.execution", "bot.exchange.trading", "bot.exchange.binance", "bot.risk.engine",
                                  "bot.risk.modes", "bot.paper", "bot.forward", "bot.strategies")) for m in mods), mods
     assert ".env" not in SRC.read_text().replace("never reads `.env`", "")
+
+
+@pytest.mark.parametrize("value,level", [("0.98", None), ("0.96", "warning"), ("0.935", "critical")])
+def test_simulated_accounts_are_checked_for_drawdown_from_their_saved_index(home, value, level):
+    """The paper and forward runners write no drawdown in their status line: the saved index gives it."""
+    fwd = home / "forward-h2b"
+    state = json.loads((fwd / "state.json").read_text())
+    state["index"] = {"units": "10000", "value_per_unit": value, "peak_value_per_unit": "1"}
+    (fwd / "state.json").write_text(json.dumps(state))
+    (fwd / "journal.jsonl").write_text(json.dumps({"at": NOW - 60, "event": "status", "equity": "10001",
+                                                   "mode": "RUNNING"}) + "\n")       # as the paper runner writes it
+    got = [f.level for f in acct(home) if f.rule == "drawdown" and f.subject == "forward"]
+    assert got == ([level] if level else [])

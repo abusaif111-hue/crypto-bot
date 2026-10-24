@@ -137,7 +137,7 @@ def render(obs: list[Observation], now: float) -> str:
         if o.error:
             lines.append(f"{o.symbol:<9} could not read prices: {o.error}")
             continue
-        lines.append(f"{o.symbol:<9} {o.day}: close {o.close}, day {_p(o.change_1d_pct)}, week {_p(o.change_7d_pct)}; "
+        lines.append(f"{o.symbol:<9} {o.day}: close {'?' if o.close is None else f'{o.close.normalize():f}'}, day {_p(o.change_1d_pct)}, week {_p(o.change_7d_pct)}; "
                      f"regime {o.regime}")
         if o.above_avg50 is not None:
             slope = "" if o.avg50_rising is None else (", average rising" if o.avg50_rising else ", average falling")

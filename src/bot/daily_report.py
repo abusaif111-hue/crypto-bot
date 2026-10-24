@@ -111,6 +111,11 @@ def conclude(findings: list[Finding], accounts: list[Account], forward: dict[str
     return INSUFFICIENT, "The H2b forward test has hit its drawdown breaker."
 
 
+def _num(x: Decimal | None) -> str:
+    """A price without trailing zeros and never in exponent form (81189.43, not 81189.43000000)."""
+    return "?" if x is None else f"{x.normalize():f}"
+
+
 def _p(x: Decimal | None) -> str:
     return "?" if x is None else f"{x:+.2f}%"
 
@@ -130,7 +135,7 @@ def _market(obs: list[Observation], findings: list[Finding]) -> tuple[list[str],
         regime.append(f"{o.symbol}: regime {o.regime}; {side} its 50-day average ({_p(o.from_avg50_pct)}); "
                       f"volatility {o.vol30_pct}% a day{rank}.")
         vol = "" if o.volume_vs_avg is None else f"; volume {o.volume_vs_avg}x its 30-day average"
-        detail.append(f"{o.symbol} {o.day}: close {o.close}; day {_p(o.change_1d_pct)}, week {_p(o.change_7d_pct)}{vol}.")
+        detail.append(f"{o.symbol} {o.day}: close {_num(o.close)}; day {_p(o.change_1d_pct)}, week {_p(o.change_7d_pct)}{vol}.")
     unusual = [f for f in findings if f.rule == "abnormal volatility"]
     regime.append("Uncertainty: " + ("; ".join(f"{f.subject} {f.reason}" for f in unusual) if unusual else
                                      "no coin shows abnormal volatility today (calm markets can still move "
@@ -170,7 +175,7 @@ def _risk(accounts: list[Account], findings: list[Finding]) -> list[str]:
             continue
         start = "" if a.started_with is None else f" of {a.started_with:,.2f} at the start"
         eq = "?" if a.equity is None else f"{a.equity:,.2f}"
-        dd = "?" if a.drawdown_pct is None else f"{a.drawdown_pct}%"
+        dd = "?" if a.drawdown_pct is None else f"{a.drawdown_pct:.2f}%"
         out.append(f"{a.name} ({a.money}): {eq} USDT{start}; drawdown {dd} (breaker 6%); {a.mode}; "
                    f"{len(a.open_trades)} open, {a.closed} closed.")
     bad = [f for f in findings if f.level in (CRITICAL, WARNING)]

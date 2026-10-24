@@ -119,3 +119,18 @@ def test_the_server_answers_get_only(home):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_drawdown_comes_from_the_saved_index_when_the_status_has_none(home):
+    paper_state = json.loads((home / "paper" / db.STATE).read_text())
+    paper_state["index"] = {"units": "10000", "value_per_unit": "0.9777", "peak_value_per_unit": "1.0002"}
+    (home / "paper" / db.STATE).write_text(json.dumps(paper_state))
+    live_acct = json.loads((home / "live" / db.ACCOUNT).read_text())
+    live_acct["index"] = {"value_per_unit": "0.5", "peak_value_per_unit": "1"}       # the status line wins
+    (home / "live" / db.ACCOUNT).write_text(json.dumps(live_acct))
+    live, _, _, paper = db.read_all(home)
+    assert live.drawdown_pct == Dec("0.4")
+    assert abs(paper.drawdown_pct - (1 - Dec("0.9777") / Dec("1.0002")) * 100) < Dec("0.0001")
+    paper_state["index"] = {"value_per_unit": "1.1", "peak_value_per_unit": "1.1"}
+    (home / "paper" / db.STATE).write_text(json.dumps(paper_state))
+    assert db.read_all(home)[3].drawdown_pct == 0
