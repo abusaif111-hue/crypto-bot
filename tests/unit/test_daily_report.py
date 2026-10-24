@@ -296,3 +296,10 @@ def test_the_dashboard_shows_the_latest_report(tmp_path):
     (tmp_path / "reports" / "latest.md").write_text("Daily report, x\nConclusion: <b>Insufficient</b>\nrest\n")
     page = dashboard.render([], NOW, dashboard.read_report(tmp_path))
     assert "Conclusion: &lt;b&gt;Insufficient&lt;/b&gt;" in page and 'href="/report"' in page and "rest" not in page
+
+
+def test_numbers_are_shown_plainly():
+    r = build(accounts=[acct(drawdown_pct=Dec("0.000000"))], observations=[obs(close=Dec("81189.43000000"))])
+    assert "drawdown 0.00% (breaker 6%)" in section(r, "Risk")[0]
+    assert section(r, "Major-asset observations")[0].startswith("BTCUSDT 2026-10-23: close 81189.43;")
+    assert dr._num(Dec("1E+2")) == "100" and dr._num(None) == "?"

@@ -99,6 +99,15 @@ def _journal(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _index_drawdown(saved: dict[str, Any]) -> Decimal | None:
+    """Drawdown in % from a saved account's drawdown index, for runners whose status line has none."""
+    ix = saved.get("index") or {}
+    value, peak = _d(ix.get("value_per_unit")), _d(ix.get("peak_value_per_unit"))
+    if value is None or not peak or peak <= 0:
+        return None
+    return max(Decimal(0), (1 - value / peak) * 100)
+
+
 def read_account(home: Path, name: str, folder: str, money: str) -> Account:
     """Everything the page shows about one runner, from its files. Never raises for a bad file."""
     d = Path(home) / folder
@@ -122,6 +131,8 @@ def read_account(home: Path, name: str, folder: str, money: str) -> Account:
         modes = account.get("modes") or {}
         acct.mode = str(modes.get("mode") or acct.mode)
         acct.breaches = list(modes.get("active_breaches") or [])
+        if acct.drawdown_pct is None:
+            acct.drawdown_pct = _index_drawdown(account)
         ledger = _json(d / LEDGER, acct) or {}
         for t in ledger.get("trades", []):
             if t.get("status") in ("OPEN", "PENDING"):
@@ -138,6 +149,8 @@ def read_account(home: Path, name: str, folder: str, money: str) -> Account:
         modes = state.get("modes") or {}
         acct.mode = str(modes.get("mode") or acct.mode)
         acct.breaches = list(modes.get("active_breaches") or [])
+        if acct.drawdown_pct is None:                        # the paper runner's status line has no drawdown
+            acct.drawdown_pct = _index_drawdown(state)
         for p in state.get("positions", []):
             acct.open_trades.append({"symbol": p.get("symbol"), "status": "OPEN", "qty": p.get("qty"),
                                      "entry": p.get("entry_price"), "stop": p.get("stop_price"),
