@@ -15,6 +15,11 @@ In this folder:
 - [`h2b-plan.md`](h2b-plan.md): the plan for H2b (blended momentum with a volatility pause)
   and its forward test, after H2 failed the holdout. Approved by Sultan on 23 Oct 2026 and frozen.
 - [`h4-plan.md`](h4-plan.md): the plan for H4 (hourly pullbacks in an uptrend, short-term
-  trading) and its own forward test. H4 did not qualify on walk-forward (24 Oct 2026) and is rejected. Approved by Sultan on 24 Oct 2026 and frozen.
+  trading) and its own forward test. Approved by Sultan on 24 Oct 2026 and frozen. H4 did not
+  qualify on walk-forward (24 Oct 2026) and is rejected.
+- [`intel-plan.md`](intel-plan.md): the plan for market intelligence (market observations,
+  official news), a combined read-only risk monitor and a daily report. Approved by Sultan on 24 Oct 2026.
+- [`intraday-plan.md`](intraday-plan.md): the plan for intraday research (I1 trend, I2 breakout, I3 range
+  and news-aware variants; 15m signals, 1h context; BTC only). Approved by Sultan on 24 Oct 2026 and frozen.
 
 `CLAUDE.md` in the project root carries the rules that matter for writing code.
