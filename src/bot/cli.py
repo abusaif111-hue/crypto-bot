@@ -11,6 +11,7 @@
     bot dashboard [--port 8050]                           (private, read-only page; open it through an SSH tunnel)
     bot signals                                           (how close H2b is to buying each coin; read-only)
     bot monitor                                           (risk monitor across accounts and coins; read-only)
+    bot market                                            (daily market observations; read-only)
     bot live check | baseline | reconcile | start | run | status | resume | block   (REAL money; Sultan's switch)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
@@ -839,6 +840,26 @@ def _monitor(args: argparse.Namespace, make_exchange=None, out=None) -> int:
     return 0
 
 
+def _market(args: argparse.Namespace, make_exchange=None, out=None) -> int:
+    """Daily market observations for the forward test's coins (read-only; public prices; changes nothing)."""
+    from bot import monitor
+    from bot.exchange.binance import BinanceReadOnly
+    from bot.intel import market
+    from bot.market.data import MarketDataService
+
+    out = out or sys.stdout
+    cfg = load_config(args.config)
+    ft = monitor._read_json(Path(os.path.expanduser(args.home)) / "forward-h2b" / "forward.json") or {}
+    symbols = list(args.symbols or ft.get("symbols") or cfg.universe)
+    try:
+        data = MarketDataService((make_exchange or BinanceReadOnly)(environment="live"), _forward_cfg(cfg, symbols))
+    except Exception as e:
+        print(f"Error: could not connect to Binance: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
+    out.write(market.render(market.gather(data, symbols), time.time()))
+    return 0
+
+
 def _dashboard(args: argparse.Namespace) -> int:
     """The private dashboard (bot-dashboard): read-only, on this machine only (open it through an SSH tunnel)."""
     from bot import dashboard
@@ -1565,6 +1586,9 @@ def main(argv: list[str] | None = None) -> int:
     mo.add_argument("--symbols", nargs="*", default=None, help="default: the forward test's coins")
     mo.add_argument("--no-market", action="store_true", help="only the accounts; no Binance prices")
     mo.add_argument("--record-dir", default="~/monitor", help="where findings are appended (findings.jsonl)")
+    mk = sub.add_parser("market", help="daily market observations for the traded coins (read-only)")
+    mk.add_argument("--home", default="~", help="the folder holding forward-h2b/ (for the coin list)")
+    mk.add_argument("--symbols", nargs="*", default=None, help="default: the forward test's coins")
     db = sub.add_parser("dashboard", help="private read-only dashboard on this machine (open via an SSH tunnel)")
     db.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
     db.add_argument("--host", default="127.0.0.1", help="this machine only: 127.0.0.1")
@@ -1666,6 +1690,8 @@ def main(argv: list[str] | None = None) -> int:
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
         if args.cmd == "signals":
             return _signals(args)
+        if args.cmd == "market":
+            return _market(args)
         if args.cmd == "monitor":
             return _monitor(args)
         if args.cmd == "dashboard":

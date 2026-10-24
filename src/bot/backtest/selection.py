@@ -23,8 +23,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from bot.analysis.indicators import percentile, realized_vol, sma
-from bot.analysis.resample import DAY_MS, daily
+from bot.analysis.indicators import percentile
+from bot.analysis.regime import regime_labels
+from bot.analysis.resample import DAY_MS
 from bot.backtest.engine import run
 from bot.backtest.metrics import Metrics
 from bot.backtest.periods import HOLDOUT_SPENT, RESEARCH_START_MS
@@ -171,30 +172,6 @@ def checks(ev: StrategyEvaluation, cfg: AppConfig) -> list[Check]:
 
 
 # ---------------------------------------------------------------- regimes (labelling rules fixed before testing)
-def regime_labels(candles: list[Candle]) -> dict[int, tuple[str, bool]]:
-    """Per day: bull / bear / sideways from the 200-day average and its 20-day slope; high-volatility
-    when the 30-day volatility is in the top fifth of the research period."""
-    days = daily(candles)
-    closes = [d.close for d in days]
-    avg = sma(closes, 200)
-    vol = realized_vol(closes, 30)
-    known = sorted(v for v in vol if v is not None)
-    cut = percentile(known, D("0.8")) if known else None
-    out = {}
-    for i, d in enumerate(days):
-        a, a20 = avg[i], avg[i - 20] if i >= 20 else None
-        if a is None or a20 is None:
-            label = "unlabelled"
-        elif d.close > a and a > a20:
-            label = "bull"
-        elif d.close < a and a < a20:
-            label = "bear"
-        else:
-            label = "sideways"
-        out[d.open_time] = (label, cut is not None and vol[i] is not None and vol[i] >= cut)
-    return out
-
-
 def regime_breakdown(trades: list[ClosedTrade], candles: dict[str, list[Candle]]) -> dict[str, tuple[int, Decimal]]:
     labels = {s: regime_labels(cs) for s, cs in candles.items()}
     agg: dict[str, list[Decimal]] = defaultdict(list)

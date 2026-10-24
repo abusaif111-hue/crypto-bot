@@ -162,6 +162,9 @@ bot paper status
    Risk monitor done (step 1): `bot.monitor` + `bot monitor`: read-only findings (level, rule, reason, data)
    across accounts and coins, appended to `~/monitor/findings.jsonl`; it never writes into a runner's folder
    and does not block anything yet (blocking on a critical finding is a separate, reviewed change).
+   Market observations done (step 2): `bot.intel.market` + `bot market` (read-only; finished candles only;
+   breadth over the forward test's coins). The regime rule lives in `bot.analysis.regime`, shared with the
+   backtests (`selection.regime_labels` is the same function; never fork it).
 
 Gates before live: testnet with at least 5 clean round trips; paper trading for
 8+ weeks and 30+ closed trades with at least 5 profitable and zero rule violations.
