@@ -457,6 +457,32 @@ bash /home/bot/crypto-bot/scripts/install_alerts_service.sh      # as root: star
 alerts test
 ```
 
+## Risk monitor (`bot monitor`, read-only)
+
+One check across every account (live, testnet, the H2b forward test, paper) and the coins they trade
+(`docs/intel-plan.md`, section 7). Each finding has a level, the rule, the reason and the numbers it used:
+
+| Rule | Level |
+| --- | --- |
+| A runner silent for 40 minutes, or its last price read failed; Binance unreachable | critical |
+| Reconciliation found a difference (live, testnet) | critical |
+| Drawdown past half the 6% breaker / at the breaker | warning / critical |
+| Daily or weekly loss past half its limit; another breaker active | warning |
+| One coin above 25% of the account, or more open trades in a correlation group than allowed | warning |
+| The same coin proposed and not traded more than 3 times in 3 days | warning |
+| Newest finished 4h candle more than 4h 10min old; server clock off Binance by more than 500 ms | critical |
+| Spread above 0.10%; 30-day volatility in the top 10% of its year; a daily move beyond 3x that volatility | warning |
+| Too little history or too few trades to judge (for example the forward test's 30 trades and 12 months) | info |
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot monitor              # as the bot user; findings are added to ~/monitor/findings.jsonl
+```
+
+It only reads: it imports nothing that trades, never writes into a runner's folder, never reads `.env`
+and never blocks or resumes anything (the runners still stop new entries on their own). Stops are not a
+guarantee: a price can gap through a stop, a stop can fill worse than its price, and stops depend on
+Binance being up.
+
 ## Dashboard (private, read-only)
 
 `bot dashboard` (service `bot-dashboard`) shows every account on one page: the live account, the

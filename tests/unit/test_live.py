@@ -3,6 +3,7 @@ Sultan's live switch: the config (environment live, live_trading true), the type
 trading key that can trade Spot and nothing else, and a capped account within the ceiling."""
 import argparse
 import io
+import json
 import subprocess
 from decimal import Decimal as Dec
 from pathlib import Path
@@ -142,6 +143,14 @@ def test_the_runner_trades_live_only_with_an_authorized_trader_and_a_live_ledger
     ex.authorization = authorize_live(LIVE_CFG, SWITCH)
     with pytest.raises(RunnerError, match="ledger is for testnet"):
         TestnetRunner(tmp_path, LIVE_CFG, ex, data, data, [Idea()], {}, Ledger.load(tmp_path / "t", "testnet"), acct)
+
+
+def test_the_live_runner_names_the_live_resume_command(tmp_path):
+    ex, book, acct = live_world(tmp_path)
+    data = MarketDataService(FakeMarket(), LIVE_CFG)
+    TestnetRunner(tmp_path, LIVE_CFG, ex, data, data, [Idea()], {}, book, acct).run(max_ticks=0)
+    started = json.loads((tmp_path / "journal.jsonl").read_text().splitlines()[0])
+    assert started["event"] == "started" and started["note"].endswith("bot live resume")
 
 
 def test_alerts_watch_the_live_runner():
