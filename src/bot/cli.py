@@ -873,9 +873,12 @@ def _news_check(args: argparse.Namespace, http=None, out=None) -> int:
     out.write(f"Official news sources, checked {sources.utc(now)} (read-only; public feeds):\n")
     for c in checks:
         mark = "OK  " if c.ok else "FAIL"
-        extra = f"{c.items} items kept, newest {c.newest}" if c.ok else c.problem
+        kept = f"{c.items} items kept" + (f", newest {c.newest}" if c.newest else "")
+        extra = kept + (f"; {c.filtered} left out by the filter" if c.filtered else "") if c.ok else c.problem
         undated = f"; {c.undated} without a readable time (left out)" if c.undated else ""
         out.write(f"  {mark} {c.name}: {extra}{undated}\n       {c.url}\n")
+        for t in c.left_out:
+            out.write(f"       left out: {t[:110]}\n")
     ok = sum(c.ok for c in checks)
     out.write(f"{ok} of {len(checks)} sources work; only these are used in the daily report. Saved in {path}\n")
     return 0

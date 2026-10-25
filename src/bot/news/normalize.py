@@ -67,6 +67,7 @@ class Parsed:
     undated: int = 0
     future: int = 0
     filtered: int = 0
+    left_out: list[str] = field(default_factory=list)      # titles the source's filter did not keep
 
 
 def _text(el: ET.Element | None) -> str:
@@ -122,11 +123,10 @@ def parse(source: Source, body: bytes, fetched: float) -> Parsed:
     for title, link, raw in entries:
         if not title:
             continue
-        if source.keywords and not any(k in title.lower() for k in source.keywords):
+        if (source.keywords and not any(k in title.lower() for k in source.keywords)) or \
+                (source.crypto_only and not is_crypto(title)):
             out.filtered += 1
-            continue
-        if source.crypto_only and not is_crypto(title):
-            out.filtered += 1
+            out.left_out.append(title)
             continue
         when = _when(raw)
         if when is None:

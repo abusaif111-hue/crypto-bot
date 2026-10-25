@@ -102,6 +102,8 @@ class SourceCheck:
     undated: int = 0
     newest: str | None = None
     problem: str = ""
+    filtered: int = 0
+    left_out: tuple[str, ...] = ()       # a few titles the filter did not keep, to check the filter is right
 
 
 def save_check(checks: list[SourceCheck], folder: Path, now: float) -> Path:

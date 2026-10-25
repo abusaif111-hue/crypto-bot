@@ -274,3 +274,16 @@ def test_every_item_of_every_working_source_is_kept():
     _, items = feed.read_all(NOW, sources=(FED, BLS), environ={},
                              http=fake_http({FED.url: (200, two), BLS.url: (200, bls)}))
     assert sorted(i.link for i in items) == ["https://bls.example/1", "https://fed.example/1", "https://fed.example/2"]
+
+
+def test_the_check_shows_what_a_filter_left_out(tmp_path):
+    ecb = sources.SOURCES[1]
+    body = rss(*[(f"Speech by board member {i}", f"https://ecb.example/{i}", "Fri, 23 Oct 2026 10:00:00 GMT")
+                 for i in range(5)])
+    out = io.StringIO()
+    cli._news_check(argparse.Namespace(news_dir=str(tmp_path)), http=fake_http({ecb.url: (200, body)}), out=out)
+    text = out.getvalue()
+    assert f"OK   {ecb.name}: 0 items kept; 5 left out by the filter" in text and "newest None" not in text
+    assert text.count("left out: Speech by board member") == feed.SAMPLE
+    saved = json.loads((tmp_path / sources.CHECK_FILE).read_text())["sources"][1]
+    assert saved["filtered"] == 5 and len(saved["left_out"]) == 3
