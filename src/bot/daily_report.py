@@ -54,7 +54,7 @@ RESEARCH = (
      "passed walk-forward; forward test on new prices running; trades live with a capped amount"),
     ("H4 hourly pullbacks", "walk-forward 331 trades, -1.51 USDT per trade (-5.68 with doubled costs)",
      "did not qualify"),
-    ("I1-I3 intraday (15m)", "not run yet", "planned (docs/intraday-plan.md)"),
+    ("I1-I3 intraday (15m)", "not run", "paused by Sultan on 25 Oct 2026 (15m data does not fit the 512 MB server)"),
 )
 FORWARD_MIN_TRADES, FORWARD_MIN_DAYS = 30, 365
 
