@@ -107,8 +107,9 @@ def test_unusual_volatility_is_the_uncertainty_line():
         "Uncertainty: ETHUSDT 30-day volatility is in the top 10% of its past year"
 
 
-def test_news_says_it_is_not_covered_rather_than_inventing_any():
-    assert "Not covered yet" in section(build(), "News")[0]
+def test_news_not_read_says_so_rather_than_inventing_any():
+    lines = section(build(), "News")
+    assert lines == ["Not read in this run.", dr.NOT_COVERED]
 
 
 def test_scenarios_are_h2bs_own_bars_and_open_trades_show_their_exits():
@@ -154,7 +155,8 @@ def test_data_health_shows_problems_or_says_all_is_fresh():
 def test_the_telegram_version_is_short_and_points_to_the_full_report():
     short = build().short()
     assert short[0].startswith("📋 Daily report") and short[1].startswith("Conclusion: ")
-    assert "Risk:" in short and "Market regime and uncertainty:" in short and "News:" not in short
+    assert "Risk:" in short and "Market regime and uncertainty:" in short and "News:" in short
+    assert "Research evidence:" not in short
     assert short[-1].endswith("(and the dashboard).")
 
 
@@ -217,7 +219,8 @@ def _hashes(folder):
 
 def args_for(folder, **kw):
     return argparse.Namespace(config="x", home=str(folder), reports_dir=str(folder / "reports"),
-                              monitor_dir=str(folder / "monitor"), no_market=True, send=False, resend=False, **kw)
+                              monitor_dir=str(folder / "monitor"), news_dir=str(folder / "news"), no_market=True,
+                              send=False, resend=False, **kw)
 
 
 def test_the_command_reads_only_and_saves_in_its_own_folders(home, monkeypatch):  # noqa: F811
@@ -254,7 +257,9 @@ def test_a_binance_connection_failure_pauses_the_analysis(home, monkeypatch):  #
     a = args_for(home)
     a.no_market = False
     out = io.StringIO()
-    assert cli._report(a, make_exchange=broken, out=out) == 0
+    def offline(url, headers):
+        raise AssertionError("no source is verified, so no feed may be fetched")
+    assert cli._report(a, make_exchange=broken, out=out, news_http=offline) == 0
     assert "Conclusion: Pause analysis" in out.getvalue() and "data outage (binance)" in out.getvalue()
 
 

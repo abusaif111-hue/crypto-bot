@@ -3,7 +3,7 @@
 Once a day, after the 00:00 UTC daily close (04:00 Muscat), one report from what the bot already
 measures: the market observations (`bot.intel.market`), the risk monitor's findings (`bot.monitor`),
 H2b's own daily checks (`bot.signal_report`), the accounts (as the dashboard reads them) and the
-research record. It is saved to `~/reports/<date>.md` and `.json`; a short version can go to Telegram.
+research record and the official news (`bot.news`). It is saved to `~/reports/<date>.md` and `.json`; a short version can go to Telegram.
 
 The conclusion follows fixed rules and is never forced positive:
 - **Pause analysis** when any finding is critical (missing or stale data, a silent runner, a failed
@@ -14,7 +14,8 @@ The conclusion follows fixed rules and is never forced positive:
 
 Read-only: it builds text from the inputs it is given. It imports nothing that trades, never writes
 into a runner's folder, and never blocks or resumes anything. Scenarios are H2b's own rules applied
-to today's prices, not forecasts; news is not covered yet (a later step) and the report says so.
+to today's prices, not forecasts; news is listed from official sources only, with its source and time,
+never scored, and what it does not cover is said.
 """
 from __future__ import annotations
 
@@ -29,6 +30,8 @@ from typing import Any
 from bot.dashboard import Account
 from bot.intel.market import Observation, breadth
 from bot.monitor import CRITICAL, INFO, LIMITS, WARNING, Finding
+from bot.news.normalize import Item, recent
+from bot.news.sources import SourceCheck
 from bot.risk.models import RejectCode
 from bot.signal_report import CoinSignal
 
@@ -74,7 +77,7 @@ class Report:
 
     def short(self) -> list[str]:
         """Lines for Telegram: the conclusion, the market in one line, risk and every warning."""
-        keep = {"Market regime and uncertainty", "Risk"}
+        keep = {"Market regime and uncertainty", "News", "Risk"}
         out = [f"📋 Daily report {self.date}", f"Conclusion: {self.conclusion}. {self.reason}"]
         for title, lines in self.sections:
             if title in keep:
@@ -168,6 +171,34 @@ def _scenarios(signals: list[CoinSignal] | None, accounts: list[Account]) -> lis
     return out
 
 
+NOT_COVERED = ("Not covered: ETF flows, exchange incidents, listings and token announcements (no free official "
+               "feed is used), general news and social media.")
+
+
+def _news(news: tuple[list[SourceCheck], list[Item]] | None, now: float) -> list[str]:
+    if news is None:
+        return ["Not read in this run.", NOT_COVERED]
+    checks, items = news
+    used = [c for c in checks if c.ok]
+    if not used:
+        return ["No official source has passed `bot news check` on this server yet, so no news is shown.",
+                NOT_COVERED]
+    close = now - now % 86400
+    out = []
+    for it in sorted(recent(items, now), key=lambda i: i.published, reverse=True):
+        coins = ", ".join(it.coins) if it.coins else "all coins"
+        when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(it.published))
+        before = " (before the last daily close)" if it.published < close else ""
+        out.append(f"{when}{before}: {it.source_name}: {it.title} [{coins}; {it.category}; confidence "
+                   f"{it.confidence}] {it.link}")
+        out.append(f"    possible implications: {it.implication}")
+    if not out:
+        out.append(f"No new items in the last 24 hours from {len(used)} official sources "
+                   f"({', '.join(c.name for c in used)}).")
+    return out + ["News is listed, not scored: what an announcement does to prices cannot be measured "
+                  "reliably.", NOT_COVERED]
+
+
 def _risk(accounts: list[Account], findings: list[Finding]) -> list[str]:
     out = []
     for a in accounts:
@@ -195,7 +226,8 @@ def _evidence(accounts: list[Account], forward: dict[str, Any], now: float) -> l
     return out
 
 
-def _data(findings: list[Finding], obs: list[Observation], market_checked: bool) -> list[str]:
+def _data(findings: list[Finding], obs: list[Observation], market_checked: bool,
+          news: tuple[list[SourceCheck], list[Item]] | None = None) -> list[str]:
     data_rules = {"data outage", "stale prices", "clock", "unreadable file"}
     bad = [f for f in findings if f.rule in data_rules]
     out = [f"{f.level.upper()}: {f.subject} {f.rule}: {f.reason}." for f in bad]
@@ -205,24 +237,27 @@ def _data(findings: list[Finding], obs: list[Observation], market_checked: bool)
         days = sorted({o.day for o in obs if o.day})
         out.append("Prices fresh, the server clock matches Binance, every runner is reporting"
                    + (f"; last finished day {days[-1]}." if days else "."))
+    for c in (news or ([], []))[0]:
+        if not c.ok and not c.problem.startswith("not checked yet"):
+            out.append(f"WARNING: news source {c.name}: {c.problem}.")
     short = [f for f in findings if f.level == INFO]
     out += [f"Note: {f.subject}: {f.reason}." for f in short]
     return out
 
 
 def build(now: float, accounts: list[Account], findings: list[Finding], obs: list[Observation],
-          signals: list[CoinSignal] | None, forward: dict[str, Any], market_checked: bool = True) -> Report:
+          signals: list[CoinSignal] | None, forward: dict[str, Any], market_checked: bool = True,
+          news: tuple[list[SourceCheck], list[Item]] | None = None) -> Report:
     conclusion, reason = conclude(findings, accounts, forward)
     regime, detail = _market(obs, findings)
     sections = [
         ("Market regime and uncertainty", regime),
-        ("News", ["Not covered yet: official sources (central banks, US data releases, regulators, Binance "
-                  "status) come in a later step. No news is shown rather than unverified news."]),
+        ("News", _news(news, now)),
         ("Major-asset observations", detail or ["None today."]),
         ("Scenarios and invalidation (H2b's rules)", _scenarios(signals, accounts)),
         ("Risk", _risk(accounts, findings)),
         ("Research evidence", _evidence(accounts, forward, now)),
-        ("Data quality and API health", _data(findings, obs, market_checked)),
+        ("Data quality and API health", _data(findings, obs, market_checked, news)),
     ]
     return Report(time.strftime("%Y-%m-%d", time.gmtime(now)), now, conclusion, reason, sections)
 
