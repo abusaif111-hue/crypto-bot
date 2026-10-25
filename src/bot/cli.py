@@ -1817,7 +1817,7 @@ def main(argv: list[str] | None = None) -> int:
     bh.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     for q in bsub.choices.values():
         q.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
-        q.add_argument("--interval", default="4h", choices=["4h", "1h"] if q is bf else ["4h"])
+        q.add_argument("--interval", default="4h", choices=["4h", "1h", "15m"] if q is bf else ["4h"])
     args = p.parse_args(argv)
     try:
         if args.cmd == "backtest":
