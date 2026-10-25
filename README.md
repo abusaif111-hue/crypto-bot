@@ -533,7 +533,7 @@ The daily report's News section lists announcements from official bodies' own fe
 | --- | --- |
 | Federal Reserve, monetary policy | everything |
 | European Central Bank, press releases | interest rate and monetary policy decisions |
-| US Bureau of Labor Statistics, latest releases | CPI, employment situation, PPI |
+| US Bureau of Labor Statistics: CPI, Employment Situation, PPI (one feed each) | everything |
 | US SEC, press releases | only items that mention crypto (needs `NEWS_CONTACT`, see below) |
 | US CFTC, press releases | only items that mention crypto |
 

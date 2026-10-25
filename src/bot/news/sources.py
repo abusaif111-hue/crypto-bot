@@ -42,8 +42,11 @@ SOURCES = (
            "central bank"),
     Source("ecb_press", "European Central Bank: press releases", "https://www.ecb.europa.eu/rss/press.html",
            "central bank", keywords=("monetary policy", "interest rate", "key ecb interest rates")),
-    Source("bls_latest", "US Bureau of Labor Statistics: latest releases", "https://www.bls.gov/feed/bls_latest.rss",
-           "us data", keywords=("consumer price index", "employment situation", "producer price index")),
+    # BLS's "latest numbers" feed is one summary item (seen on the server, 25 Oct 2026), so each release's own
+    # feed is used instead; bot news check shows whether each address works.
+    Source("bls_cpi", "US BLS: Consumer Price Index", "https://www.bls.gov/feed/cpi.rss", "us data"),
+    Source("bls_jobs", "US BLS: Employment Situation", "https://www.bls.gov/feed/empsit.rss", "us data"),
+    Source("bls_ppi", "US BLS: Producer Price Index", "https://www.bls.gov/feed/ppi.rss", "us data"),
     Source("sec_press", "US SEC: press releases", "https://www.sec.gov/news/pressreleases.rss", "regulation",
            needs_contact=True, crypto_only=True),
     Source("cftc_press", "US CFTC: press releases", "https://www.cftc.gov/RSS/RSSGP/rssgp.xml", "regulation",

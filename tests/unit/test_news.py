@@ -185,7 +185,7 @@ def test_news_check_records_what_works(tmp_path):
     text = out.getvalue()
     assert "OK   Federal Reserve: monetary policy: 2 items kept" in text and "FAIL" in text
     assert sources.verified(tmp_path) == {sources.SOURCES[0].key}
-    assert "1 of 5 sources work" in text
+    assert f"1 of {len(sources.SOURCES)} sources work" in text
 
 
 def test_news_show_needs_a_check_first(tmp_path, capsys):
@@ -287,3 +287,11 @@ def test_the_check_shows_what_a_filter_left_out(tmp_path):
     assert text.count("left out: Speech by board member") == feed.SAMPLE
     saved = json.loads((tmp_path / sources.CHECK_FILE).read_text())["sources"][1]
     assert saved["filtered"] == 5 and len(saved["left_out"]) == 3
+
+
+def test_each_us_data_release_has_its_own_feed():
+    """BLS's 'latest numbers' feed is a single summary item, so it is not used (seen on the server)."""
+    us = [s for s in sources.SOURCES if s.category == "us data"]
+    assert {s.key for s in us} == {"bls_cpi", "bls_jobs", "bls_ppi"} and all(not s.keywords for s in us)
+    assert all(s.url.startswith("https://www.bls.gov/feed/") for s in us)
+    assert "bls_latest.rss" not in " ".join(s.url for s in sources.SOURCES)
