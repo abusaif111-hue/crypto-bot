@@ -114,6 +114,11 @@ bot paper status
    variants on BTC 15m with 1h context, a locked final window (2024-10 to 2025-10, opened once by Sultan),
    99th-percentile random bar, context-only baselines. Simulated money only; it must never import the order
    path. Never edit that plan or tune a method to pass.
+   Step 1 done: the 15m interval (`bot backtest fetch --interval 15m`) and finished-hour candles
+   (`bot.analysis.resample.hourly`; `resample(cs, DAY_MS) == daily(cs)`, tested; `daily()` unchanged). Measured:
+   a candle takes about 940 bytes, so BTC 15m since 2019 (~273,000 candles) needs ~260 MB for prices alone.
+   **Sultan paused the intraday research (25 Oct 2026)** rather than resize the server or shorten the period.
+   Build nothing more for it and fetch no 15m data until he restarts it; the plan stays frozen as approved.
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
    (5a done: `bot.exchange.trading.BinanceTrader`, testnet only, 7 allow-listed endpoints, `bot check-trading`;
    only `bot.execution` and the CLI may import it). Never re-send an order whose outcome is unknown: Binance
