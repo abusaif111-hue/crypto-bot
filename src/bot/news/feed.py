@@ -4,6 +4,8 @@ from __future__ import annotations
 from bot.news.normalize import FeedError, Item, dedupe, parse
 from bot.news.sources import SOURCES, FetchError, Http, Source, SourceCheck, _https, fetch, utc
 
+SAMPLE = 3                              # titles left out by a filter, shown by bot news check
+
 
 def read_all(now: float, only: set[str] | None = None, sources: tuple[Source, ...] = SOURCES, http: Http = _https,
              environ: dict[str, str] | None = None) -> tuple[list[SourceCheck], list[Item]]:
@@ -23,6 +25,6 @@ def read_all(now: float, only: set[str] | None = None, sources: tuple[Source, ..
         if got.future:
             problem = f"{got.future} items dated in the future were left out"
         checks.append(SourceCheck(s.key, s.name, s.url, not problem.startswith("the feed has no"), len(got.items),
-                                  got.undated, utc(newest), problem))
+                                  got.undated, utc(newest), problem, got.filtered, tuple(got.left_out[:SAMPLE])))
         items += got.items
     return checks, dedupe(items)
