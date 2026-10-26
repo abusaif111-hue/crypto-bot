@@ -161,6 +161,9 @@ bot paper status
    127.0.0.1 only (`serve` refuses any other address); opened through an SSH tunnel. Telegram alerts: 5e.
    `bot signals` (`bot.signal_report`): read-only per-coin view of H2b's daily checks; the verdict is
    `BlendedMomentum.signal()` itself; it never changes `h2b_blend.py`, places orders or writes files.
+   `bot entries` (`bot.entry_diagnosis`): read-only; each account's daily decisions per coin in five categories
+   (no signal, below the minimum order, not filled, blocked or missed, other); signal from `signal()`, outcome from
+   the journal, minimum-order check from `evaluate()`; never measures days before 2026-10-01.
 7. News + LLM, advisory/veto only
    Planned in `docs/intel-plan.md` (approved 24 Oct 2026): official news, market observations, a read-only
    risk monitor (may only block entries) and a daily report; none of it may import trading code.
