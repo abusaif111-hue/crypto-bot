@@ -1,6 +1,6 @@
 # H2c research protocol: do more coins give H2b more good trades?
 
-Status: **DRAFT, revision 5 (final for stage A), for Sultan's review, 26 Oct 2026. Not approved.
+Status: **DRAFT, revision 6 (final for stage A), for Sultan's review, 26 Oct 2026. Not approved.
 Nothing is built, no screen has run, no prices have been downloaded, no backtest has run.**
 
 The objective is to decide whether the proposed coin-list change **deserves further investigation**, not to prove
@@ -24,6 +24,10 @@ clusters and regimes, and minimum-evidence rules (9.4, 10); a list of unresolved
 Revision 5 (final clarifications): exactly how R2 draws its entry days, matches the number of ideas and applies the
 exit-vote exclusion, why that uses no future information or favours H2c, and what stays unmatched (9.1a); what the
 0.05 / 7 threshold does and does not control (9.3); and what passing the gate does and does not mean (10.1).
+
+Revision 6 (R2's statistics): S/Q is calibrated in sample, which makes R2 a conditional test; which constraints the null
+keeps and which it does not; R2's spread is likely too narrow for H2c's bunched entries (anti-conservative), with a
+check reported beside every p-value; and everything fixed before results, with no further runs (9.1b).
 
 **Approvals, in stages (each needs Sultan's explicit decision; none follows from an earlier one):**
 
@@ -294,8 +298,8 @@ finished at the decision moment. The only whole-period quantity is q_c, a single
 ideas to make on each coin, never *which* days, and nothing about what happened after any day. So R2's entry days carry no
 information about later returns. That is the null hypothesis: "entry days with no information".
 
-**Why it does not systematically favour H2c.** Compared with R1, every change makes the benchmark harder to beat, not
-easier:
+**Why it does not systematically favour H2c's average.** Compared with R1, every change makes the benchmark harder to
+beat, not easier (its *spread* is a separate matter, 9.1b):
 - R2 decides at the same moment as H2c.
 - It makes the same expected number of ideas per coin, so H2c gets no credit for trading the coins that did best more often.
 - It never buys a coin that H2b's exit would sell on the same data, which removes R1's main tilt (paying round trips on
@@ -313,6 +317,65 @@ easier:
 - **Holding time:** reported (mean days held, profit per day held), not matched.
 - **The realised number of ideas** per seed: random around S_c, not equal.
 
+#### 9.1b What R2's calibration and design mean statistically
+
+**(a) S/Q is calibrated in sample.** S_c (H2c's signal days per coin) comes from the same research data on which H2c is
+then judged. So R2 is a **conditional** randomization test: it asks whether, *given* that H2c entered coin c on S_c
+days of this period, H2c's days were better than S_c days drawn at random from the qualifying ones. Consequences:
+
+- **No outcome leaks into the benchmark.** S_c is a count only, fixed by H2c's deterministic rules; it says nothing about
+  which days, or what any trade earned, and no choice by anyone goes into it. Conditioning on it does not tilt the
+  benchmark toward or against H2c on average.
+- **Counts are not independent of the market.** H2c signals more in strongly trending periods, so S_c partly reflects how
+  the period went. The test holds that fixed and asks only about the *choice of days*; it says nothing about whether H2c
+  would signal as often, or as profitably, elsewhere.
+- **The p-value is relative to a reference set built from this data,** not an exact probability under a model of how
+  prices are generated. It is a descriptive measure of how unusual H2c's days are among random qualifying days of the
+  same period. It is in-sample throughout: the statistic E is in-sample too (full period, default settings).
+
+**(b) Which constraints the null preserves, and which it does not.**
+
+| Constraint | Preserved by R2? | Consequence |
+| --- | --- | --- |
+| Exits, sizing, costs, `evaluate()` and every risk rule, including the 3-position, 1-per-coin and 2-per-group limits | **Yes, as rules**: every R2 idea goes through the same engine | Fair |
+| How often those limits actually bind | **No**: H2c's signals bunch, R2's are spread out, so the limits refuse more of H2c's ideas | The trades actually taken differ in number and timing |
+| Correlated signals across coins (several coins signalling in the same rally) | **No**: R2 draws each coin independently | R2's trades are less correlated than H2c's |
+| Clustering of entries in time and across market regimes | **Only partly**: no R2 buy on a coin whose exit vote would fire, so downtrend days are excluded as for H2c; within the remaining days R2 spreads its ideas evenly | R2 does not bunch in rallies as H2c does |
+| Volatility pause, trend strength at entry, holding time | **No** (9.1a) | Part of what is under test, or reported only |
+
+**The main statistical consequence:** because R2's trades are less bunched and less correlated than H2c's, the spread of
+R2's E_s across seeds is likely **narrower** than the spread an uninformative strategy with H2c's bunching would have.
+That makes the test **anti-conservative**: such a strategy would pass more often than alpha. The same holds for R1. So a
+"conclusive pass" means "H2c's days beat evenly spread random days by more than their spread", **not** a calibrated
+probability that H2c's entry choice has no information.
+
+**A check fixed now, reported with every p-value (information only; it does not change the gate):**
+- the standard deviation of E_s over the 2,000 seeds, for R1 and R2;
+- the standard error of H2c's own E: the bootstrap of 9.4 (active months, 10,000 draws, the same seed) applied to the
+  full-period trades behind E;
+- if H2c's standard error is more than **1.5 times** a benchmark's standard deviation, the report prints beside that
+  p-value: **"benchmark spread likely too narrow for H2c's clustering: significance likely overstated"**;
+- a cautious standardized gap, (E - mean of E_s) / max(standard deviation of E_s, H2c's standard error), shown beside it.
+
+A gate pass with that warning is reported as a pass with the warning in its outcome line, never without it.
+
+**Considered and not adopted:** a benchmark that keeps H2c's bunching by shifting its whole signal calendar in time
+(all coins together) by a random number of days. Not adopted because the shift wraps rising and falling years together,
+adjacent shifts are nearly identical (few independent draws), and it adds a third test. Recorded in section 12.
+
+**(c) Fixed before any result, and no further runs.**
+- Fixed at the approving commit: the statistic E, its period, mode, costs and default settings; R1's chance 1/30; R2's
+  rules and the formula q_c = S_c / Q_c; the generator, the seeds (0 to 1,999 and 100,000 to 101,999) and N = 2,000; the
+  p-value formula; m = 7 and alpha; the pass, fail and inconclusive bands; the dispersion check; the labels.
+- S_c and Q_c are computed mechanically by the reviewed stage-B code from H2c's full-period run, in the same stage-D run
+  that produces the p-values; nobody sets or adjusts them.
+- Stage D runs **once**. After any result is seen: no more seeds, no other seeds, no change to N, the statistic, the
+  settings, the benchmarks, q_c, alpha or the bands, and no additional benchmark. Any of these would be a new exploratory
+  experiment with its own document, counted in m.
+- A technical failure (a crash, a full disk) before any result is shown may be re-run from scratch with identical code and
+  inputs; it is logged with its cause. The stage-B code's SHA-256 is recorded with the results, so the run that produced
+  them can be identified.
+
 ### 9.2 Is the comparison fair? What it can and cannot show
 
 | Factor | R1 (fixed chance) | R2 (matched) | Effect on the comparison |
@@ -326,7 +389,9 @@ easier:
 
 **What a conclusive pass on both can show:** on the reused research period, H2c's entries made more net profit per trade
 than random entries with the same exits, coins and risk rules (and, for R2, the same decision time, rate and avoidance of
-coins H2b's exit would sell), by more than the declared allowance for 7 runs attributes to luck (9.3).
+coins H2b's exit would sell), by more than the declared allowance for 7 runs attributes to luck (9.3), with the caveat
+of 9.1b: the benchmarks' spread is probably too narrow for H2c's bunched entries, so that significance is probably
+overstated.
 
 **What it cannot show:** that H2c is better than H2b; that the extra coins add value (both benchmarks trade the same coins;
 that is section 10, rule 4); that the edge holds out of sample (the statistic is in-sample, full period, default settings);
@@ -359,7 +424,8 @@ an independent confirmation of any kind.
   true false-pass risk is **higher than 5% by an unknown amount**.
 - **What the threshold controls.** Bonferroni at 0.05 / 7 bounds the chance of at least one false pass at 5% **only
   for the seven listed tests, and only if each test's p-value is valid under its null**, that is, if the random
-  benchmark is a correct model of "entries with no information" and the tests and their reporting were fixed in
+  benchmark is a correct model of "entries with no information" (9.1b explains why R1 and R2 probably make the p-values
+  too small for H2c's bunched entries) and the tests and their reporting were fixed in
   advance (this holds for any dependence between the seven). It does **not** control the informal and historical
   choices above, the six earlier runs (tested at 5% each), or any choice outside the family. **No claim is made that
   the overall false-positive probability of this research is 5% or less**; it is higher by an unknown amount.
@@ -451,6 +517,9 @@ same recorded candles, and the limits of section 8 would apply in full.
 | Random bar 99.29th (m = 7), N = 2,000, inconclusive band | Calibrated to the 6 earlier runs |
 | Splitting listings at 3-day gaps | The archive check of 26 Oct (LUNAUSDT, FTTUSDT), done before any price was seen |
 | A second, matched random benchmark (R2), and its exact rules | Analysis of the existing benchmark's design (revisions 4 and 5); no result seen |
+| R2 calibrated to H2c's own signal counts on the same data (in sample) | A design choice to match frequency; declared in 9.1b |
+| The dispersion check and its 1.5x reporting threshold | Revision 6; a reporting rule chosen before any result; it does not change the gate |
+| A calendar-shift benchmark considered and not adopted | Revision 6 (reasons in 9.1b) |
 | Minimum-evidence rules (active months, clusters, two regimes) | Sultan's review of revision 3; no result seen |
 
 Every Phase 1 result is therefore **exploratory**, not an independent confirmation.
@@ -475,7 +544,7 @@ the 512 MB server limits coins and random runs.
 
 ## 15. Sultan's decisions (stage A)
 
-- [ ] Approve and freeze this protocol text (revision 5: sections 1 to 14 and 16). This approves **no**
+- [ ] Approve and freeze this protocol text (revision 6: sections 1 to 14 and 16). This approves **no**
       implementation, download, screen, coin selection, backtest, forward test, service or live trading.
 - [ ] Separately, later: approve the stage-B code; then the stage-B run; then stage C; then stage D.
 
@@ -499,6 +568,11 @@ the 512 MB server limits coins and random runs.
 9. **H2b's own coins** (XRP, BNB) keep the original screen's look-ahead, so the baseline is not clean either.
 10. **Not tested here at all:** the forward behaviour of H2c, live fills, the 100 USDT minimum-order limit, and any
     period after 2025-09-30.
+11. **R2 is calibrated in sample.** It is a conditional test given H2c's own signal counts on this data; its p-value is
+    relative to random days of the same period, not a probability about how prices are generated.
+12. **The random benchmarks do not keep H2c's bunching** (correlated coins, rallies, how often limits bind). Their spread
+    is likely too narrow, so their significance is likely overstated (anti-conservative); the 9.1b check shows how much,
+    but does not correct it.
 
 ---
 
