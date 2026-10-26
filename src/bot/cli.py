@@ -1033,6 +1033,49 @@ def _signals(args: argparse.Namespace, make_exchange=None, out=None) -> int:
     return 0
 
 
+def _entries(args: argparse.Namespace, make_exchange=None, out=None, now: float | None = None) -> int:
+    """Why H2b is not entering, per account and coin (read-only; public Binance data; changes nothing)."""
+    from datetime import datetime, timezone
+
+    from bot import entry_diagnosis as ed
+    from bot import forward
+    from bot.exchange.binance import BinanceReadOnly
+    from bot.market.data import MarketDataService
+
+    out = out or sys.stdout
+    now = time.time() if now is None else now
+    home = Path(os.path.expanduser(args.home))
+    try:
+        ft = forward.load(Path(os.path.expanduser(args.forward_dir)))
+        strategy = forward.make_strategy(ft)
+    except forward.ForwardError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    since = None
+    if args.since:
+        try:
+            since = int(datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+        except ValueError:
+            print("Error: --since must be a date like 2026-10-20", file=sys.stderr)
+            return 2
+    cfg = _forward_cfg(load_config(args.config), ft.symbols)
+    starts = [a.started_at for a in (ed.read_account(home, n, f) for n, f in ed.ACCOUNTS) if a.started_at]
+    first = min((ed.decision_days(t, now, since) or [int(now * 1000)])[0] for t in starts) if starts else int(now * 1000)
+    days = int(now * 1000 - first) // 86_400_000 + 2
+    candles, rules, errors = {}, {}, []
+    try:
+        data = MarketDataService((make_exchange or BinanceReadOnly)(environment="live"), cfg)
+        for s in strategy.symbols:
+            rules[s] = data.rules(s)
+            candles[s] = data.closed_candles(s, strategy.interval, limit=strategy.history_needed() + days * 6 + 12)
+    except Exception as e:
+        errors.append(f"could not read Binance: {type(e).__name__}: {e}")
+    dx = ed.diagnose(home, strategy, cfg, candles, rules, now, since, names=args.accounts or None)
+    dx.errors += errors
+    out.write(ed.render(dx, cfg))
+    return 1 if errors else 0
+
+
 DEFAULT_PAPER_DIR = "~/paper"
 PAPER_GATE_WEEKS, PAPER_GATE_TRADES, PAPER_GATE_PROFITABLE = 8, 30, 5
 
@@ -1705,6 +1748,11 @@ def main(argv: list[str] | None = None) -> int:
         q.set_defaults(env="live")
     sg = sub.add_parser("signals", help="how close H2b is to buying each coin (read-only; changes nothing)")
     sg.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
+    en = sub.add_parser("entries", help="why H2b is not entering, per account and coin (read-only; changes nothing)")
+    en.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
+    en.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
+    en.add_argument("--since", default=None, help="first day to measure (YYYY-MM-DD; default: each account's start)")
+    en.add_argument("--accounts", nargs="*", default=None, choices=["live", "testnet", "forward", "paper"])
     mo = sub.add_parser("monitor", help="risk monitor across every account and coin (read-only; changes nothing)")
     mo.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
     mo.add_argument("--symbols", nargs="*", default=None, help="default: the forward test's coins")
@@ -1829,6 +1877,8 @@ def main(argv: list[str] | None = None) -> int:
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
         if args.cmd == "signals":
             return _signals(args)
+        if args.cmd == "entries":
+            return _entries(args)
         if args.cmd == "news":
             return {"check": _news_check, "show": _news_show}[args.news_cmd](args)
         if args.cmd == "report":

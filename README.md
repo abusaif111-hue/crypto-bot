@@ -594,6 +594,33 @@ and changes nothing; a warning is shown if H2b's code or the config differ from 
 cd ~/crypto-bot && .venv/bin/bot signals          # as the bot user
 ```
 
+## Why is H2b not entering? (`bot entries`, read-only)
+
+`bot entries` puts every daily decision since each account started (live, testnet, the H2b forward
+test, paper), coin by coin, in one category, with counts and percentages per coin:
+
+1. no qualifying H2b signal (with H2b's own reason);
+2. a signal the risk engine refused because the order would be below Binance's minimum within the
+   0.25% risk budget;
+3. an entry order sent but not filled;
+4. the account paused or blocked (mode, breaker, reconciliation), or the daily decision missed
+   (the runner down or failing in the 00:00-04:00 UTC window);
+5. any other reason; and "entered".
+
+The signal is recomputed with H2b's own `signal()` on the candles the runner saw; what the runner did
+comes from its journal. For every day H2b signalled it also shows whether that idea could meet
+Binance's minimum order at the account's capital, and the smallest capital the risk engine would have
+accepted for it (risk settings unchanged). It prints Binance's live rules for each coin (minimum order,
+quantity step, order types) and each account's mode. Days before 1 Oct 2026 are never measured.
+
+It reads only the runners' files and public Binance data, places no order, writes no file and changes
+nothing (not H2b, its settings, its capital or the forward test).
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot entries                      # as the bot user
+.venv/bin/bot entries --accounts live forward --since 2026-10-23
+```
+
 ## Going live (module 5f; REAL money; Sultan only)
 
 The live mode is the testnet runner on the real exchange, with more locks. Nothing is bought or sold on
