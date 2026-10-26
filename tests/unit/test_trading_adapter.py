@@ -194,6 +194,22 @@ def test_query_cancel_and_open_orders():
     assert o.status == "NEW" and not o.final
 
 
+def test_trade_history_by_time_is_a_read_of_the_allowed_endpoint_only():
+    """PR-1: reconciliation's evidence of an executed entry. One GET of /api/v3/myTrades, nothing else."""
+    rows = [{"orderId": 5, "isBuyer": True, "qty": "0.0012", "time": 1_000, "price": "80000", "commission": "0",
+             "commissionAsset": "BTC"},
+            {"orderId": 6, "isBuyer": False, "qty": "0.0012", "time": 2_000, "price": "81000", "commission": "0",
+             "commissionAsset": "USDT"}]
+    c = FakeClient().script(("GET", "/api/v3/myTrades"), rows)
+    got = trader(c).trades_between("BTCUSDT", 500, 3_000)
+    assert [(r.order_id, r.is_buyer, r.qty, r.time_ms) for r in got] == [(5, True, Dec("0.0012"), 1_000),
+                                                                        (6, False, Dec("0.0012"), 2_000)]
+    assert [(m, e) for m, e, _ in c.calls] == [("GET", "/api/v3/myTrades")]
+    assert c.calls[0][2] == {"symbol": "BTCUSDT", "startTime": 500, "endTime": 3_000, "limit": trading.TRADES_PAGE}
+    assert ("GET", "/api/v3/myTrades") in trading.TRADE_ENDPOINTS
+    assert ("GET", "/api/v3/myTrades") not in trading.ORDER_ENDPOINTS
+
+
 def test_account_and_the_key_check():
     c = FakeClient().script(("GET", "/api/v3/account"), {
         "canTrade": True, "canWithdraw": True, "accountType": "SPOT", "permissions": ["SPOT"],

@@ -138,6 +138,10 @@ bot paper status
    and `bot.execution.reconcile` (read-only: never places or cancels; anything that differs, an unknown
    outcome or an exchange error blocks new entries). `bot reconcile`; `testnet-roundtrip` reconciles
    before and after. Never loosen what reconciliation checks to make it pass.
+   PR-1 (audit finding H1): while any trade is PENDING the runner refuses every new entry (same round, later
+   rounds, after restarts). A PENDING entry not found after `SETTLE_S` is NOT_OPENED only if no protective or
+   closing order, no buy fill since it was written (`trades_between`, same myTrades endpoint) and no extra coins
+   exist; otherwise it stays PENDING as an uncertain mismatch. Fixes for H2/H3 (exits) are not approved yet.
    5d done: `bot.execution.runner.TestnetRunner` (service `bot-testnet`, state `~/testnet`): every round it
    reconciles (unprotected coins are sold at once; mismatches block until an operator resumes), marks the
    capped account (`bot.execution.account`: capital + changes since the start), runs time stops, then H2b

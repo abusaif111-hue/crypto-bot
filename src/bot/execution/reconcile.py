@@ -5,9 +5,13 @@ by tests). What it finds goes to the caller, which blocks new entries unless the
 (`faults()` names the mode-controller faults to report).
 
 Checked, every run:
-- PENDING trades (sent, outcome not recorded): the entry is looked up by its client ID. No such
-  order after SETTLE_S seconds means it was never placed; younger, it stays unsettled. A filled
-  entry is checked like an OPEN trade, with the coins received worked out from its fills.
+- PENDING trades (sent, outcome not recorded): the entry is looked up by its client ID. Not found and
+  younger than SETTLE_S seconds, it stays unsettled. Not found after that is NOT proof on its own: it
+  counts as never placed only if Binance also has none of the trade's protective or closing orders, no
+  buy fill on the coin since the trade was written, and no more of the coin than the ledger expects.
+  Any of those means the outcome is uncertain: a mismatch, the trade stays PENDING, and new entries
+  stay blocked (the runner also refuses every entry while any trade is PENDING). A filled entry is
+  checked like an OPEN trade, with the coins received worked out from its fills.
 - OPEN trades: both protective orders must be open SELLs covering the coins (less one step). One
   filled means Binance closed the trade (the other must have ended); both gone means the bot's
   own market sale closed it, or, if that sale did not fill, the coins are UNPROTECTED.
@@ -29,11 +33,13 @@ from typing import Protocol
 
 from bot.core.money import ZERO, plain
 from bot.exchange.binance import ExchangeError
-from bot.exchange.trading import AccountInfo, OrderState, TradeFill
+from bot.exchange.trading import TRADES_PAGE, AccountInfo, OrderState, TradeFill, TradeRecord
 from bot.execution.ledger import CLOSED, NOT_OPENED, OPEN, PENDING, Ledger, TrackedTrade
 
 SETTLE_S = 300.0
 ENDED = ("CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED")
+FILL_MARGIN_MS = 60_000                      # look for fills from a minute before the trade was written (clocks)
+FILL_WINDOW_MS = 24 * 3_600_000 - 1          # Binance allows at most 24 hours per myTrades request (verify on testnet)
 
 
 class ReadOnlyTrader(Protocol):
@@ -43,6 +49,7 @@ class ReadOnlyTrader(Protocol):
     def open_orders(self, symbol: str | None = None) -> list[OrderState]: ...
     def account(self) -> AccountInfo: ...
     def my_trades(self, symbol: str, order_id: int) -> list[TradeFill]: ...
+    def trades_between(self, symbol: str, start_ms: int, end_ms: int) -> list[TradeRecord]: ...
 
 
 @dataclass(frozen=True)
@@ -107,7 +114,7 @@ def _check(ledger: Ledger, trader: ReadOnlyTrader, tolerance: dict[str, Decimal]
     held: dict[str, Decimal] = {}                     # coins of trades that are OPEN after this run
     for t in list(ledger.active()):
         if t.status == PENDING:
-            received = _resolve_pending(t, trader, now, rec)
+            received = _resolve_pending(t, trader, now, rec, ledger, tolerance)
         else:
             received = t.received_qty
         if received is not None:
@@ -156,15 +163,26 @@ def _expected(ledger: Ledger, rec: Reconciliation, held: dict[str, Decimal]) -> 
     return out
 
 
-def _resolve_pending(t: TrackedTrade, trader: ReadOnlyTrader, now: float, rec: Reconciliation) -> Decimal | None:
+def _resolve_pending(t: TrackedTrade, trader: ReadOnlyTrader, now: float, rec: Reconciliation, ledger: Ledger,
+                     tolerance: dict[str, Decimal]) -> Decimal | None:
     """The coins received if the entry filled; None if the trade did not open (or is not settled)."""
     e = trader.query(t.symbol, t.ids["entry"])
     if e is None:
-        if now - t.created_at >= SETTLE_S:
-            rec.updates.append(Update(t.intent_id, NOT_OPENED, note="Binance has no such entry order"))
-        else:
+        age = now - t.created_at
+        if age < SETTLE_S:
             rec.unsettled.append(f"{t.symbol} entry {t.ids['entry']}: not found yet; waiting "
-                                 f"{SETTLE_S:.0f} s before treating it as never placed")
+                                 f"{SETTLE_S:.0f} s, then checking every other record before deciding")
+            return None
+        evidence = _execution_evidence(t, trader, now, ledger, tolerance)
+        if evidence:
+            rec.mismatches.append(f"{t.symbol} entry {t.ids['entry']}: not found after {age:.0f} s, but "
+                                  f"{'; '.join(evidence)}. The outcome is uncertain: the trade stays PENDING "
+                                  f"and new entries stay blocked until it is settled")
+            return None
+        rec.updates.append(Update(t.intent_id, NOT_OPENED,
+                                  note=f"not found after {age:.0f} s, and Binance has no protective or closing "
+                                       f"order of the trade, no buy fill on the coin since it was written and "
+                                       f"no extra coins: never placed"))
         return None
     if not e.final:
         rec.mismatches.append(f"{t.symbol} entry {e.client_order_id} is {e.status}; a fill-or-kill entry "
@@ -179,6 +197,29 @@ def _resolve_pending(t: TrackedTrade, trader: ReadOnlyTrader, now: float, rec: R
     rec.updates.append(Update(t.intent_id, OPEN, received_qty=received, note="entry filled (found by reconciliation)",
                               prices={"entry_price": e.quote_qty / e.executed_qty}))
     return received
+
+
+def _execution_evidence(t: TrackedTrade, trader: ReadOnlyTrader, now: float, ledger: Ledger,
+                        tolerance: dict[str, Decimal]) -> list[str]:
+    """Signs on Binance that a PENDING trade's entry was executed although its order cannot be found."""
+    out = []
+    for kind in ("stop", "take-profit", "exit"):
+        o = trader.query(t.symbol, t.ids[kind])
+        if o is not None:
+            out.append(f"its {kind} order {o.client_order_id} exists ({o.status})")
+    start = int(t.created_at * 1000) - FILL_MARGIN_MS
+    fills = trader.trades_between(t.symbol, start, min(int(now * 1000), start + FILL_WINDOW_MS))
+    buys = [f for f in fills if f.is_buyer]
+    if len(fills) >= TRADES_PAGE:
+        out.append(f"{len(fills)} fills on {t.symbol} since the trade was written, too many to check")
+    elif buys:
+        out.append(f"{len(buys)} buy fill(s) on {t.symbol} since the trade was written "
+                   f"({plain(sum((f.qty for f in buys), ZERO))} {t.base_asset})")
+    have = next((b.total for b in trader.account().balances if b.asset == t.base_asset), ZERO)
+    want = ledger.expected_holdings().get(t.base_asset, ZERO)
+    if have - want > tolerance.get(t.base_asset, ZERO):
+        out.append(f"Binance holds {plain(have - want)} more {t.base_asset} than the ledger expects")
+    return out
 
 
 def _check_open(t: TrackedTrade, received: Decimal, trader: ReadOnlyTrader, step: Decimal,

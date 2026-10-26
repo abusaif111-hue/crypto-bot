@@ -13,7 +13,8 @@ from bot import cli
 from bot.core.ids import new_intent_id
 from bot.core.money import plain
 from bot.exchange.binance import ExchangeError
-from bot.exchange.trading import AccountInfo, BinanceTrader, OrderState, OrderStatusUnknown, TradeFill
+from bot.exchange.trading import (TRADES_PAGE, AccountInfo, BinanceTrader, OrderState, OrderStatusUnknown,
+                                  TradeFill, TradeRecord)
 from bot.execution import reconcile as rc
 from bot.execution.ledger import CLOSED, LEDGER, NOT_OPENED, OPEN, PENDING, Ledger, LedgerError
 from bot.portfolio.accounting import Balance
@@ -38,6 +39,7 @@ class Venue:
         self.orders, self.open, self.fills = {}, [], {}
         self.balances = {"BTC": Dec(btc), "USDT": Dec("10000")}
         self.fail = False
+        self.history = []                          # TradeRecord fills (myTrades by time)
 
     def query(self, symbol, cid):
         if self.fail:
@@ -52,6 +54,10 @@ class Venue:
 
     def my_trades(self, symbol, order_id):
         return self.fills.get(order_id, [])
+
+    def trades_between(self, symbol, start_ms, end_ms):
+        self.history_asked = (symbol, start_ms, end_ms)
+        return [r for r in self.history if start_ms <= r.time_ms <= end_ms]
 
     def __getattr__(self, name):
         raise AssertionError(f"reconciliation called {name}")
@@ -254,6 +260,105 @@ def test_a_pending_entry_never_found_after_the_wait_was_never_placed(tmp_path):
     assert b.trades[t.intent_id].status == NOT_OPENED
 
 
+# ---------------------------------------------------------------- PR-1: not found after the wait is not proof
+def old_pending(b, age=rc.SETTLE_S + 1):
+    return b.add_pending(new_intent_id(), "BTCUSDT", "BTC", NOW - age)
+
+
+def fill(t, buyer=True, qty="0.01", after_s=2):
+    return TradeRecord(order_id=99, is_buyer=buyer, qty=Dec(qty), time_ms=int((t.created_at + after_s) * 1000))
+
+
+def test_never_placed_only_when_every_record_agrees(tmp_path):
+    b, v = book(tmp_path), Venue()
+    t = old_pending(b)
+    rec = rc.reconcile(b, v, TOL, NOW)
+    assert rec.clean and [u.status for u in rec.updates] == [NOT_OPENED] and "never placed" in rec.updates[0].note
+    assert v.history_asked == ("BTCUSDT", int(t.created_at * 1000) - rc.FILL_MARGIN_MS, int(NOW * 1000))
+
+
+@pytest.mark.parametrize("kind", ["stop", "take-profit", "exit"])
+def test_a_protective_or_closing_order_of_the_trade_means_uncertain(tmp_path, kind):
+    b, v = book(tmp_path), Venue()
+    t = old_pending(b)
+    v.orders[t.ids[kind]] = order(t.ids[kind], "CANCELED")
+    rec = rc.reconcile(b, v, TOL, NOW)
+    assert not rec.clean and not rec.updates and "uncertain" in rec.mismatches[0] and kind in rec.mismatches[0]
+    assert rec.faults()[0][0] == "RECONCILIATION_MISMATCH"
+    rc.apply(b, rec, NOW)
+    assert b.trades[t.intent_id].status == PENDING                  # never assumed placed or not placed
+
+
+def test_a_buy_fill_since_the_trade_was_written_means_uncertain(tmp_path):
+    b, v = book(tmp_path), Venue()
+    t = old_pending(b)
+    v.history = [fill(t)]
+    rec = rc.reconcile(b, v, TOL, NOW)
+    assert not rec.updates and "1 buy fill(s) on BTCUSDT" in rec.mismatches[0] and "0.01 BTC" in rec.mismatches[0]
+
+
+def test_sell_fills_and_fills_before_the_trade_are_not_evidence(tmp_path):
+    b, v = book(tmp_path), Venue()
+    t = old_pending(b)
+    v.history = [fill(t, buyer=False), fill(t, after_s=-(rc.FILL_MARGIN_MS / 1000) - 5)]
+    rec = rc.reconcile(b, v, TOL, NOW)
+    assert rec.clean and rec.updates[0].status == NOT_OPENED
+
+
+def test_more_coins_than_the_ledger_expects_means_uncertain(tmp_path):
+    b, v = book(tmp_path), Venue(btc="1.0012")                       # baseline 1 BTC; 0.0012 more is there
+    old_pending(b)
+    rec = rc.reconcile(b, v, TOL, NOW)
+    assert not rec.updates and "holds 0.0012 more BTC than the ledger expects" in rec.mismatches[0]
+
+
+def test_coins_within_one_step_are_not_evidence(tmp_path):
+    b, v = book(tmp_path), Venue(btc="1.00001")
+    old_pending(b)
+    assert rc.reconcile(b, v, TOL, NOW).updates[0].status == NOT_OPENED
+
+
+def test_too_many_fills_to_check_means_uncertain(tmp_path):
+    b, v = book(tmp_path), Venue()
+    t = old_pending(b)
+    v.history = [fill(t, buyer=False)] * TRADES_PAGE
+    rec = rc.reconcile(b, v, TOL, NOW)
+    assert not rec.updates and "too many to check" in rec.mismatches[0]
+
+
+def test_the_fill_search_never_asks_for_more_than_24_hours(tmp_path):
+    b, v = book(tmp_path), Venue()
+    t = old_pending(b, age=3 * 86_400)
+    rc.reconcile(b, v, TOL, NOW)
+    _, start, end = v.history_asked
+    assert start == int(t.created_at * 1000) - rc.FILL_MARGIN_MS and end - start == rc.FILL_WINDOW_MS < 86_400_000
+
+
+def test_an_exchange_error_while_gathering_evidence_settles_nothing(tmp_path):
+    b, v = book(tmp_path), Venue()
+    t = old_pending(b)
+
+    def down(symbol, start_ms, end_ms):
+        raise ExchangeError("myTrades: no answer")
+    v.trades_between = down
+    rec = rc.reconcile(b, v, TOL, NOW)
+    assert rec.errors and not rec.updates
+    rc.apply(b, rec, NOW)
+    assert b.trades[t.intent_id].status == PENDING
+
+
+def test_an_uncertain_trade_is_settled_later_by_a_definitive_record(tmp_path):
+    b, v = book(tmp_path), Venue(btc="1.01")
+    t = old_pending(b)
+    assert "uncertain" in rc.reconcile(b, v, TOL, NOW).mismatches[0]
+    v.orders[t.ids["entry"]] = order(t.ids["entry"], "FILLED", side="BUY", type_="LIMIT", quote="800")
+    protected(v, t)
+    rec = rc.reconcile(b, v, TOL, NOW + 60)
+    assert rec.clean and [u.status for u in rec.updates] == [OPEN]
+    rc.apply(b, rec, NOW + 60)
+    assert b.trades[t.intent_id].status == OPEN and b.trades[t.intent_id].received_qty == Dec("0.01")
+
+
 def test_a_pending_entry_that_expired_did_not_open(tmp_path):
     b, v = book(tmp_path), Venue()
     t = b.add_pending(new_intent_id(), "BTCUSDT", "BTC", NOW)
@@ -320,7 +425,8 @@ def test_reconciliation_only_reads():
     tree = ast.parse((SRC / "execution" / "reconcile.py").read_text())
     called = {n.func.attr for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
               and isinstance(n.func.value, ast.Name) and n.func.value.id == "trader"}
-    assert called == {"query", "open_orders", "account", "my_trades"}, called
+    # trades_between (PR-1) reads the same myTrades endpoint by time; test_trading_adapter proves it only sends GETs
+    assert called == {"query", "open_orders", "account", "my_trades", "trades_between"}, called
     assert set(rc.ReadOnlyTrader.__dict__) >= called
     for name in ("place", "cancel", "cancel_list", "place_protected_entry", "test_order"):
         assert f".{name}(" not in (SRC / "execution" / "reconcile.py").read_text()
