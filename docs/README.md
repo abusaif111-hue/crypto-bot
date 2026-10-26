@@ -22,5 +22,8 @@ In this folder:
 - [`intraday-plan.md`](intraday-plan.md): the plan for intraday research (I1 trend, I2 breakout, I3 range
   and news-aware variants; 15m signals, 1h context; BTC only). Approved by Sultan on 24 Oct 2026 and frozen.
   Paused by Sultan on 25 Oct 2026 after step 1: 15-minute data does not fit the 512 MB server.
+- [`h2c-plan.md`](h2c-plan.md): the H2c research protocol (H2b's rules on up to 2 more coins chosen by a
+  point-in-time screen). Stage A approved by Sultan on 26 Oct 2026 and frozen at revision 7. Stage B (code, screen,
+  downloads) not approved; nothing built or run. H2b and its forward test are unchanged.
 
 `CLAUDE.md` in the project root carries the rules that matter for writing code.
