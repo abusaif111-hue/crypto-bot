@@ -119,6 +119,10 @@ bot paper status
    a candle takes about 940 bytes, so BTC 15m since 2019 (~273,000 candles) needs ~260 MB for prices alone.
    **Sultan paused the intraday research (25 Oct 2026)** rather than resize the server or shorten the period.
    Build nothing more for it and fetch no 15m data until he restarts it; the plan stays frozen as approved.
+   H2c research protocol (`docs/h2c-plan.md`): stage A (the document only) approved by Sultan on 26 Oct 2026 and
+   frozen at revision 7; never edit it (any change is a new exploratory experiment with its own document). Stage B
+   is **not** approved: build no H2c code, run no coin screen, download no prices, select no coins and run no
+   backtest until Sultan approves each stage separately. H2b and its forward test stay unchanged.
 5. Execution: idempotent orders, OPOCO entry with FOK (verify on testnet) or IOC + OCO fallback, protection verification, reconciliation
    (5a done: `bot.exchange.trading.BinanceTrader`, testnet only, 7 allow-listed endpoints, `bot check-trading`;
    only `bot.execution` and the CLI may import it). Never re-send an order whose outcome is unknown: Binance

@@ -1,7 +1,8 @@
 # H2c research protocol: do more coins give H2b more good trades?
 
-Status: **DRAFT, revision 7 (final for stage A), for Sultan's review, 26 Oct 2026. Not approved.
-Nothing is built, no screen has run, no prices have been downloaded, no backtest has run.**
+Status: **STAGE A APPROVED by Sultan on 26 Oct 2026. Frozen at revision 7** (content of commit `444af24`;
+this commit records the approval only). Stage A covers this document only. **Stage B is not approved:** nothing is
+built, no screen has run, no prices have been downloaded, no coins are selected, no backtest has run.
 
 The objective is to decide whether the proposed coin-list change **deserves further investigation**, not to prove
 that H2c is better than H2b. If the evidence is insufficient or a critical data-quality check fails, the study says
@@ -589,9 +590,10 @@ the 512 MB server limits coins and random runs.
 
 ## 15. Sultan's decisions (stage A)
 
-- [ ] Approve and freeze this protocol text (revision 7: sections 1 to 14 and 16). This approves **no**
-      implementation, download, screen, coin selection, backtest, forward test, service or live trading.
-- [ ] Separately, later: approve the stage-B code; then the stage-B run; then stage C; then stage D.
+- [x] Approve and freeze this protocol text (revision 7: sections 1 to 14 and 16). **Approved by Sultan on
+      26 Oct 2026.** This approves **no** implementation, download, screen, coin selection, backtest, forward test,
+      service or live trading.
+- [ ] Separately, later: approve the stage-B code; then the stage-B run; then stage C; then stage D. (Not approved.)
 
 ## 16. Unresolved limitations (known before any result)
 
