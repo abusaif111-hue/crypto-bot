@@ -1,6 +1,6 @@
 # H2c research protocol: do more coins give H2b more good trades?
 
-Status: **DRAFT, revision 4 (complete research protocol), for Sultan's review, 26 Oct 2026. Not approved.
+Status: **DRAFT, revision 5 (final for stage A), for Sultan's review, 26 Oct 2026. Not approved.
 Nothing is built, no screen has run, no prices have been downloaded, no backtest has run.**
 
 The objective is to decide whether the proposed coin-list change **deserves further investigation**, not to prove
@@ -20,6 +20,10 @@ Revision 4 (after Sultan's review of revision 3): a second, matched random bench
 random test can and cannot show (9.1, 9.2); the multiple-testing family justified, with earlier selection and informal
 experiments accounted for (9.3); the screen report records every candidate (5.1); the bootstrap with few months,
 clusters and regimes, and minimum-evidence rules (9.4, 10); a list of unresolved limitations (16).
+
+Revision 5 (final clarifications): exactly how R2 draws its entry days, matches the number of ideas and applies the
+exit-vote exclusion, why that uses no future information or favours H2c, and what stays unmatched (9.1a); what the
+0.05 / 7 threshold does and does not control (9.3); and what passing the gate does and does not mean (10.1).
 
 **Approvals, in stages (each needs Sultan's explicit decision; none follows from an earlier one):**
 
@@ -261,17 +265,53 @@ coin in the *full candidate list* (H2b's four plus every extra coin picked at an
 any of the six daily 4h closes. Seeds 0 to 1,999. (Drawing for ineligible coins too keeps each seed's sequence
 independent of the universe.)
 
-**R2, the matched benchmark (new in revision 4).** Built to remove R1's known tilts (9.2):
-- **When:** only at H2c's own decision time, the first 4h close after 00:00 UTC each day.
-- **Which coin-days qualify:** the coin is eligible, not already held, has the history H2b needs (399 daily candles), and
-  H2b's exit vote would **not** fire that day (fewer than 2 of the 14/28/56-day returns below zero). So R2 never buys a
-  coin that H2b's own exit would sell the next day.
-- **How often:** for each coin c, a fixed chance q_c = (H2c's signal days on c on which it did not hold c) / (qualifying
-  coin-days for c), both counted in the same full-period run as H2c's statistic. So R2's expected number of ideas per coin
-  equals H2c's. q_c depends on how *often* H2c signalled, never on how its trades did; q_c = 0 for a coin H2c never
-  signalled on.
-- **Draws:** each decision day, for every coin in the full candidate list in symbol order, one draw u from
-  `random.Random(seed)`; a buy idea if the coin-day qualifies and u < q_c. Seeds 100,000 to 101,999.
+**R2, the matched benchmark (new in revision 4).** Built to remove R1's known tilts (9.2). Exact rules in 9.1a.
+
+#### 9.1a R2, exactly
+
+- **Decision moments.** Only H2c's own: the first finished 4h candle after 00:00 UTC each day (the moment H2b's
+  `_new_day` is true), nothing in between.
+- **Qualifying coin-days.** At a decision moment, coin c qualifies when all hold, each computed only from candles that
+  had finished by then (the same data H2b's own signal and exit vote see that day):
+  1. c is eligible at that moment (H2b's four, or an extra coin picked at the latest screen date, section 5);
+  2. c has the history H2b needs (399 finished daily candles);
+  3. H2b's exit vote would **not** fire on today's data: fewer than 2 of the 14, 28 and 56-day returns are below zero.
+  Whether c is already held is **not** part of the rule; an idea for a held coin is refused by `evaluate()` (no adding),
+  for H2c and R2 alike. So the qualifying days depend on prices only, and are the same for every random run.
+- **Matching the number of ideas.** In H2c's full-period run (the same run that gives the statistic E, default settings),
+  count for each coin c: S_c = the qualifying coin-days on which H2c's own `signal()` said "enter", and Q_c = all
+  qualifying coin-days. Every H2c signal day qualifies (2 of 3 returns strong means at most 1 below zero), so S_c <= Q_c.
+  R2's chance is q_c = S_c / Q_c, so its expected number of ideas on c is exactly S_c. For each seed, the realised count
+  varies around S_c; the report shows it. If S_c = 0, R2 never buys c.
+- **Drawing.** For seed s, one `random.Random(s)` (Python's Mersenne Twister). At every decision moment, for every coin in
+  the full candidate list (H2b's four plus every extra coin ever picked), in symbol order, one draw u = `rng.random()` is
+  always taken; c gets a buy idea when it qualifies and u < q_c. Taking a draw even when c does not qualify keeps each
+  seed's sequence the same whatever the eligibility. Seeds 100,000 to 101,999. Each idea then takes H2b's entry price, stop,
+  take-profit and time stop and goes through `evaluate()`.
+
+**Why this uses no future information.** The draws are independent of prices. Each qualifying test uses only candles
+finished at the decision moment. The only whole-period quantity is q_c, a single number per coin. It tells R2 *how many*
+ideas to make on each coin, never *which* days, and nothing about what happened after any day. So R2's entry days carry no
+information about later returns. That is the null hypothesis: "entry days with no information".
+
+**Why it does not systematically favour H2c.** Compared with R1, every change makes the benchmark harder to beat, not
+easier:
+- R2 decides at the same moment as H2c.
+- It makes the same expected number of ideas per coin, so H2c gets no credit for trading the coins that did best more often.
+- It never buys a coin that H2b's exit would sell on the same data, which removes R1's main tilt (paying round trips on
+  downtrend buys).
+- Exits, sizing and risk rules are identical.
+
+**What remains unmatched (and could still tilt the result either way):**
+- **Volatility at entry:** H2c skips days in its volatility pause; R2 can buy on them.
+- **Strength of the trend at entry:** R2 buys any non-downtrend day; H2c only strong ones. This is the difference under
+  test, not a bias.
+- **Timing across the period:** H2c's signals bunch in rallies and in certain months; R2 spreads its ideas over all
+  qualifying days of the period. The test therefore credits H2c both for *which months* and for *which days* it trades.
+- **Bunching across coins:** H2c's signals often come on several coins at once, so the position limits refuse more of its
+  ideas than R2's spread-out ones; the trades actually taken differ.
+- **Holding time:** reported (mean days held, profit per day held), not matched.
+- **The realised number of ideas** per seed: random around S_c, not equal.
 
 ### 9.2 Is the comparison fair? What it can and cannot show
 
@@ -317,6 +357,12 @@ an independent confirmation of any kind.
   random-walk calculations in earlier messages (a model, no market data); `bot signals` and `bot entries` on forward data
   (not research data); and the choices in section 12. A Bonferroni count cannot include ideas that were never run, so the
   true false-pass risk is **higher than 5% by an unknown amount**.
+- **What the threshold controls.** Bonferroni at 0.05 / 7 bounds the chance of at least one false pass at 5% **only
+  for the seven listed tests, and only if each test's p-value is valid under its null**, that is, if the random
+  benchmark is a correct model of "entries with no information" and the tests and their reporting were fixed in
+  advance (this holds for any dependence between the seven). It does **not** control the informal and historical
+  choices above, the six earlier runs (tested at 5% each), or any choice outside the family. **No claim is made that
+  the overall false-positive probability of this research is 5% or less**; it is higher by an unknown amount.
 - **The level:** alpha = 0.05 / 7 = **0.00714** for each of R1 and R2. The six earlier runs were tested at 5% each, so the
   family as a whole never had a 5% family-wise error rate; m = 7 sets H2c's level as if all seven had been tested at
   alpha. Earlier verdicts are not revisited (H2b's plan is frozen). For information, Phase 1 also reports H2b's own p-values
@@ -379,6 +425,14 @@ an independent confirmation of any kind.
 In every case the result is reported in full and recorded in `RESEARCH`; H2b continues unchanged, and nothing further
 starts without Sultan's separate decision.
 
+### 10.1 What passing means, and does not
+
+Passing the gate, in either form, means only that **H2c may deserve further investigation**. It does **not**
+establish that H2c is better than H2b, that it will be profitable in future markets, that its edge is real rather than
+a product of reused data and earlier choices, or that it is suitable for live trading. No report, message or summary
+may describe a pass in any of those terms. Any next step (for example a forward test with simulated money) needs its
+own plan and Sultan's explicit approval; live trading is outside this research entirely.
+
 ## 11. After the gate (not part of this protocol)
 
 A pass does not start anything. A forward test would need its own plan and Sultan's separate decision. If one is ever
@@ -396,7 +450,7 @@ same recorded candles, and the limits of section 8 would apply in full.
 | C3 first; C1 and C2 deferred | Revision 1's reasoning and Sultan's review |
 | Random bar 99.29th (m = 7), N = 2,000, inconclusive band | Calibrated to the 6 earlier runs |
 | Splitting listings at 3-day gaps | The archive check of 26 Oct (LUNAUSDT, FTTUSDT), done before any price was seen |
-| A second, matched random benchmark (R2) | Analysis of the existing benchmark's design (revision 4); no result seen |
+| A second, matched random benchmark (R2), and its exact rules | Analysis of the existing benchmark's design (revisions 4 and 5); no result seen |
 | Minimum-evidence rules (active months, clusters, two regimes) | Sultan's review of revision 3; no result seen |
 
 Every Phase 1 result is therefore **exploratory**, not an independent confirmation.
@@ -421,8 +475,8 @@ the 512 MB server limits coins and random runs.
 
 ## 15. Sultan's decisions (stage A)
 
-- [ ] Approve and freeze this protocol text (sections 1 to 14 and 16). This approves **no** implementation, download,
-      screen, coin selection, backtest, forward test, service or live trading.
+- [ ] Approve and freeze this protocol text (revision 5: sections 1 to 14 and 16). This approves **no**
+      implementation, download, screen, coin selection, backtest, forward test, service or live trading.
 - [ ] Separately, later: approve the stage-B code; then the stage-B run; then stage C; then stage D.
 
 ## 16. Unresolved limitations (known before any result)
