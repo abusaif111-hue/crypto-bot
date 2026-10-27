@@ -69,6 +69,11 @@ class FakeBinance:
             raise ExchangeError("testnet down")
         return self.orders.get(cid)
 
+    def query_by_id(self, symbol, order_id):
+        if self.fail_reads:
+            raise ExchangeError("testnet down")
+        return next((o for o in self.orders.values() if o.order_id == order_id), None)
+
     def cancel_list(self, symbol, list_cid):
         self.sent.append(("cancel", list_cid))
         hit = False
@@ -641,3 +646,50 @@ def test_the_pending_check_comes_before_a_new_trade_is_written():
     src = inspect.getsource(TestnetRunner._enter)
     gate, write = src.index("t.status == PENDING"), src.index("add_pending(")
     assert gate < write and "return" in src[gate:write]
+
+
+# ---------------------------------------------------------------- PR-1b: unreadable replies, fills that are not the bot's
+def test_the_runner_survives_an_unreadable_reply_and_recovers(world):
+    from bot.exchange.trading import MalformedResponse
+    from bot.execution.ledger import LEDGER
+    resume(world)
+    good = world.ex.open_orders
+
+    def garbled(symbol=None):
+        raise MalformedResponse("openOrders: Binance's reply is not a list")
+    world.ex.open_orders = garbled
+    before = (world.dir / LEDGER).read_bytes()
+    for _ in range(3):                                                   # three rounds: no crash
+        world.clock.advance(60)
+        world.runner.tick()
+    assert (world.dir / LEDGER).read_bytes() == before
+    assert len(events(world.dir, "exchange_data_error")) == 1           # said once, not every round
+    assert events(world.dir, "entries_paused")
+    world.ex.open_orders = good
+    world.clock.advance(60)
+    world.runner.tick()
+    assert events(world.dir, "entries_unpaused") and world.runner.account.modes.mode is Mode.RUNNING
+
+
+def test_a_restart_settles_a_trade_whose_only_fill_was_a_manual_buy(world):
+    from bot.exchange.trading import TradeRecord
+    from bot.execution import reconcile as rc
+    resume(world)
+    next_candle(world)
+    unknown_entries(world)
+    world.s.ideas = [intent()]
+    world.runner.tick()
+    (t,) = world.runner.ledger.trades.values()
+    world.ex._put("web_manual", side="BUY", type="MARKET", status="FILLED", orig_qty=Dec("0.001"),
+                  executed_qty=Dec("0.001"), order_id=900)
+    world.ex.bal["BTC"] += Dec("0.001")
+    world.ex.history = [TradeRecord(900, True, Dec("0.001"), int((t.created_at + 5) * 1000), Dec(0), "USDT")]
+    world.runner.account.save()
+    world.clock.advance(rc.SETTLE_S + 60)
+    again = TestnetRunner(world.dir, world.cfg, world.ex, world.runner.exchange, world.runner.signals, [world.s],
+                          {"BTCUSDT": "majors", "ETHUSDT": "majors"}, Ledger.load(world.dir, "testnet"),
+                          TradingAccount.load(world.dir, world.cfg, world.clock()), clock=world.clock)
+    again.tick()
+    assert again.ledger.trades[t.intent_id].status == NOT_OPENED          # settled: the fill was not the bot's
+    assert Ledger.load(world.dir, "testnet").trades[t.intent_id].status == NOT_OPENED
+    assert any("BTC: Binance holds" in e["detail"] for e in events(world.dir, "reconciliation_mismatch"))

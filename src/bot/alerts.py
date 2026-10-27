@@ -101,6 +101,9 @@ def describe(source: str, e: dict[str, Any]) -> Alert | None:
     if ev == "reconciliation_mismatch":
         return a(RED, f"the account does not match the ledger; entries blocked. {e.get('detail', '')}",
                  f"{ev}:{e.get('detail')}")
+    if ev == "exchange_data_error":
+        return a(RED, f"Binance sent a reply the bot could not read; nothing was changed and new entries are paused "
+                      f"until it reads cleanly again. {e.get('reason', '')}", f"{ev}:{e.get('reason')}")
     if ev == "exit_failed":
         return a(RED, f"ACT NOW if this repeats: could not close {sym} ({e.get('why', '')}): {e.get('reason', '')}",
                  f"{ev}:{sym}")
