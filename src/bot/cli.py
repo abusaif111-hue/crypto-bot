@@ -10,6 +10,7 @@
     bot alerts setup | test | run                         (Telegram alerts)
     bot dashboard [--port 8050]                           (private, read-only page; open it through an SSH tunnel)
     bot signals                                           (how close H2b is to buying each coin; read-only)
+    bot daily-signal [--equity 1000]                      (D1 daily trend pullback: LONG or NO TRADE; simulated)
     bot monitor                                           (risk monitor across accounts and coins; read-only)
     bot market                                            (daily market observations; read-only)
     bot report [--send]                                   (the daily report; Telegram once a day with --send)
@@ -1033,6 +1034,35 @@ def _signals(args: argparse.Namespace, make_exchange=None, out=None) -> int:
     return 0
 
 
+def _daily_signal(args: argparse.Namespace, make_exchange=None, out=None, now: float | None = None) -> int:
+    """D1's LONG or NO TRADE per coin, sized by the risk engine on a hypothetical account (simulated; public
+    market data only; places nothing). Each run is appended to the signal log unless --no-log."""
+    from bot import daily_signal
+    from bot.exchange.binance import BinanceReadOnly
+    from bot.market.data import MarketDataService
+    from bot.strategies.daily_pullback import DailyPullback
+
+    out = out or sys.stdout
+    now = time.time() if now is None else now
+    cfg = load_config(args.config)
+    try:
+        equity, loss_today, fee = D(args.equity), D(args.loss_today), D(args.fee)
+    except ArithmeticError:
+        print("Error: --equity, --loss-today and --fee must be numbers", file=sys.stderr)
+        return 2
+    if equity <= 0 or loss_today < 0 or loss_today >= equity or not 0 <= fee < 1:
+        print("Error: --equity must be positive, --loss-today between 0 and the equity, --fee a fraction",
+              file=sys.stderr)
+        return 2
+    data = MarketDataService((make_exchange or BinanceReadOnly)(environment="live"), cfg)
+    signals = daily_signal.report(DailyPullback(list(cfg.universe)), data, cfg, equity, now, loss_today, fee)
+    out.write(daily_signal.render(signals, equity, loss_today, now))
+    if not args.no_log:
+        path = daily_signal.record(Path(os.path.expanduser(args.log_dir)), signals, now, equity)
+        out.write(f"Logged to {path}\n")
+    return 0
+
+
 def _entries(args: argparse.Namespace, make_exchange=None, out=None, now: float | None = None) -> int:
     """Why H2b is not entering, per account and coin (read-only; public Binance data; changes nothing)."""
     from datetime import datetime, timezone
@@ -1748,6 +1778,12 @@ def main(argv: list[str] | None = None) -> int:
         q.set_defaults(env="live")
     sg = sub.add_parser("signals", help="how close H2b is to buying each coin (read-only; changes nothing)")
     sg.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
+    ds = sub.add_parser("daily-signal", help="D1 daily trend pullback: LONG or NO TRADE per coin (simulated; places nothing)")
+    ds.add_argument("--equity", default="1000", help="hypothetical account equity in USDT")
+    ds.add_argument("--loss-today", default="0", help="USDT already lost today (the daily loss limit applies)")
+    ds.add_argument("--fee", default="0.001", help="taker fee as a fraction (0.001 = 0.1%%)")
+    ds.add_argument("--log-dir", default="~/daily-signal", help="where signals.jsonl is appended")
+    ds.add_argument("--no-log", action="store_true", help="print only; write nothing")
     en = sub.add_parser("entries", help="why H2b is not entering, per account and coin (read-only; changes nothing)")
     en.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
     en.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
@@ -1877,6 +1913,8 @@ def main(argv: list[str] | None = None) -> int:
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.forward_cmd](args)
         if args.cmd == "signals":
             return _signals(args)
+        if args.cmd == "daily-signal":
+            return _daily_signal(args)
         if args.cmd == "entries":
             return _entries(args)
         if args.cmd == "news":

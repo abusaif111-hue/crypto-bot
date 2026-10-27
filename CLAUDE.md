@@ -168,6 +168,11 @@ bot paper status
    `bot entries` (`bot.entry_diagnosis`): read-only; each account's daily decisions per coin in five categories
    (no signal, below the minimum order, not filled, blocked or missed, other); signal from `signal()`, outcome from
    the journal, minimum-order check from `evaluate()`; never measures days before 2026-10-01.
+   `bot daily-signal` (`bot.daily_signal`, strategy D1 `bot.strategies.daily_pullback`; Sultan's request, 27 Oct
+   2026): simulated LONG or NO TRADE per coin (daily EMA uptrend, 4h pullback and resume, stop 1.5 x ATR, 2R
+   target), sized and checked by `evaluate()` on a hypothetical account; Spot long-only; appends only to its own
+   log. Not wired into any runner, backtest or forward test, and untested on history (same family as H4). Wiring it
+   into trading, or changing its rules, needs Sultan's approval.
 7. News + LLM, advisory/veto only
    Planned in `docs/intel-plan.md` (approved 24 Oct 2026): official news, market observations, a read-only
    risk monitor (may only block entries) and a daily report; none of it may import trading code.

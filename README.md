@@ -594,6 +594,32 @@ and changes nothing; a warning is shown if H2b's code or the config differ from 
 cd ~/crypto-bot && .venv/bin/bot signals          # as the bot user
 ```
 
+## Daily trend-pullback signals (`bot daily-signal`, simulated)
+
+D1 (`src/bot/strategies/daily_pullback.py`) is a simple Spot, long-only signal, separate from H2b and not
+traded by any runner. On finished 4h candles, per coin in the config's universe:
+
+- **Daily uptrend:** the daily close is above its 50-day EMA, and the EMA is higher than 5 days earlier.
+  Otherwise NO TRADE (there are no short signals).
+- **Pullback and resume:** one of the 6 previous 4h candles touched the 4h 20-EMA, and the last 4h candle
+  closed above the previous candle's high. Only the day's first such setup counts.
+- **Plan:** entry limit at the last close + 0.10%; stop 1.5 x 4h ATR(14) below; take-profit 2x the stop
+  distance; 72-hour time stop; sold when the daily close falls below the EMA.
+- **No trade:** a spike candle (range over 2 x ATR), a stop more than 3% away, stale or missing data, or a
+  risk-engine rejection.
+
+The risk engine sizes and checks every LONG on a hypothetical account (0.25% of equity at risk;
+reward-to-risk at least 1.5 after its slippage and fees; daily and weekly loss limits), with the settings
+unchanged. With those settings a 2R target passes only when the stop is wide enough: on BTC about 2.7% or
+more, and on ETH (1.0% stop-slippage allowance) never within D1's 3% stop cap. D1 has no backtest, paper or
+live result.
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot daily-signal --equity 1000 [--loss-today 0] [--no-log]
+```
+
+Each run is appended to `~/daily-signal/signals.jsonl`. Nothing is sent to Binance.
+
 ## Why is H2b not entering? (`bot entries`, read-only)
 
 `bot entries` puts every daily decision since each account started (live, testnet, the H2b forward
