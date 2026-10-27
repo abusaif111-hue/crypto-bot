@@ -175,9 +175,11 @@ def _resolve_pending(t: TrackedTrade, trader: ReadOnlyTrader, now: float, rec: R
             return None
         evidence = _execution_evidence(t, trader, now, ledger, tolerance)
         if evidence:
-            rec.mismatches.append(f"{t.symbol} entry {t.ids['entry']}: not found after {age:.0f} s, but "
-                                  f"{'; '.join(evidence)}. The outcome is uncertain: the trade stays PENDING "
-                                  f"and new entries stay blocked until it is settled")
+            # No age or time in this text: it is the alert's key, so it must stay the same from round to round
+            # while nothing changes, or every round would send a new alert.
+            rec.mismatches.append(f"{t.symbol} entry {t.ids['entry']}: not found {SETTLE_S:.0f} s or more after "
+                                  f"it was written, but {'; '.join(evidence)}. The outcome is uncertain: the trade "
+                                  f"stays PENDING and new entries stay blocked until it is settled")
             return None
         rec.updates.append(Update(t.intent_id, NOT_OPENED,
                                   note=f"not found after {age:.0f} s, and Binance has no protective or closing "
