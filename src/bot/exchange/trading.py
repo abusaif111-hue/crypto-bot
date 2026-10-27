@@ -167,6 +167,18 @@ class TradeFill:
 
 
 @dataclass(frozen=True)
+class TradeRecord:
+    """One fill from the account's trade history, as reconciliation's evidence of what was executed."""
+    order_id: int
+    is_buyer: bool
+    qty: Decimal
+    time_ms: int
+
+
+TRADES_PAGE = 1000     # Binance's most fills per myTrades request
+
+
+@dataclass(frozen=True)
 class OrderState:
     symbol: str
     order_id: int
@@ -451,6 +463,13 @@ class BinanceTrader:
     def my_trades(self, symbol: str, order_id: int) -> list[TradeFill]:
         rows = self._read("GET", "/api/v3/myTrades", {"symbol": symbol, "orderId": order_id})
         return [TradeFill(D(r["price"]), D(r["qty"]), D(r["commission"]), r["commissionAsset"]) for r in rows]
+
+    def trades_between(self, symbol: str, start_ms: int, end_ms: int) -> list[TradeRecord]:
+        """The account's fills on `symbol` between two times (same endpoint as `my_trades`; Binance allows at most
+        24 hours between them, verify on testnet), at most TRADES_PAGE fills."""
+        rows = self._read("GET", "/api/v3/myTrades", {"symbol": symbol, "startTime": start_ms, "endTime": end_ms,
+                                                      "limit": TRADES_PAGE})
+        return [TradeRecord(int(r["orderId"]), bool(r["isBuyer"]), D(r["qty"]), int(r["time"])) for r in rows]
 
     def account(self) -> AccountInfo:
         d = self._read("GET", "/api/v3/account", {"omitZeroBalances": "true"})

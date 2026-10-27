@@ -12,6 +12,8 @@ Every round (default 60 seconds) it:
 4. once per finished candle of each strategy's interval: the strategy's exits for its own open
    trades, then its new ideas. Each idea is written to the ledger as PENDING, then goes to
    `bot.execution.entry.submit()`, which runs the risk engine and sends one protected order list.
+   While any trade is PENDING (an entry whose outcome is not known yet), no new entry is made at
+   all, in the same round or later ones, until reconciliation settles it.
    The candle each strategy decided on is saved first (`strategy-clock.json`), so a restart
    neither repeats nor skips a decision.
 
@@ -40,7 +42,7 @@ from bot.exchange.interface import INTERVAL_MS
 from bot.exchange.trading import BinanceTrader, LiveAuthorization, OrderStatusUnknown
 from bot.execution import entry, exit as exits, reconcile
 from bot.execution.account import QUOTE, TradingAccount, as_utc
-from bot.execution.ledger import CLOSED, NOT_OPENED, OPEN, Ledger, LedgerError, TrackedTrade
+from bot.execution.ledger import CLOSED, NOT_OPENED, OPEN, PENDING, Ledger, LedgerError, TrackedTrade
 from bot.market.data import MarketDataService, MarketDataUnavailable
 from bot.portfolio.accounting import MissingPrice
 from bot.risk.models import AccountState, Mode, TradeIntent
@@ -298,6 +300,13 @@ class TestnetRunner:
             self._enter(intent, now, entries_ok)
 
     def _enter(self, intent: TradeIntent, now: float, entries_ok: bool) -> None:
+        pending = [t for t in self.ledger.trades.values() if t.status == PENDING]
+        if pending:                         # an earlier entry's outcome is not known: never a second one meanwhile
+            self.log("entry_blocked", symbol=intent.symbol, strategy=intent.strategy,
+                     mode=self.account.modes.mode.value, pending=[t.intent_id[:8] for t in pending],
+                     reason=f"an earlier entry's outcome is not known yet ({', '.join(t.symbol for t in pending)}); "
+                            f"entries stay blocked until reconciliation settles it")
+            return
         state = self._state(now, entries_ok)
         if state is not None and state.mode is not Mode.RUNNING:
             self.log("entry_blocked", symbol=intent.symbol, strategy=intent.strategy, mode=state.mode.value,

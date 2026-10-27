@@ -376,8 +376,11 @@ own record of its exchange trades, the ledger (`~/testnet/ledger.json`). A trade
 *before* its order is sent, so after a crash or a timeout it can always be looked up by its ID.
 Reconciliation compares the ledger with Binance and only reads; it never places or cancels anything:
 
-- a trade whose outcome was not recorded is looked up; not found after 5 minutes means it was never
-  placed;
+- a trade whose outcome was not recorded (PENDING) is looked up. Not found after 5 minutes counts as
+  never placed **only if** Binance also has none of its protective or closing orders, no buy fill on
+  the coin since it was written, and no more of the coin than the ledger expects; otherwise the
+  outcome is uncertain, it stays PENDING, and it is reported as a mismatch. While any trade is
+  PENDING, the runner makes no new entry at all, not even another idea in the same round;
 - every open trade must have both protective orders open for the coins held. If one filled, Binance
   closed the trade; if both are gone and no closing sale filled, the coins are **unprotected**;
 - every open order on the account must be one of the bot's open trades;
