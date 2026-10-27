@@ -40,11 +40,19 @@ class Venue:
         self.balances = {"BTC": Dec(btc), "USDT": Dec("10000")}
         self.fail = False
         self.history = []                          # TradeRecord fills (myTrades by time)
+        self.by_id = {}                            # orders found only by Binance's order ID
 
     def query(self, symbol, cid):
         if self.fail:
             raise ExchangeError("testnet down")
         return self.orders.get(cid)
+
+    def query_by_id(self, symbol, order_id):
+        if self.fail:
+            raise ExchangeError("testnet down")
+        if order_id in self.by_id:
+            return self.by_id[order_id]
+        return next((o for o in self.orders.values() if o.order_id == order_id), None)
 
     def open_orders(self, symbol=None):
         return list(self.open)
@@ -294,15 +302,19 @@ def test_a_buy_fill_since_the_trade_was_written_means_uncertain(tmp_path):
     t = old_pending(b)
     v.history = [fill(t)]
     rec = rc.reconcile(b, v, TOL, NOW)
-    assert not rec.updates and "1 buy fill(s) on BTCUSDT" in rec.mismatches[0] and "0.01 BTC" in rec.mismatches[0]
+    assert not rec.updates and "order 99 (1 fill(s) on BTCUSDT" in rec.mismatches[0]
+    assert "Binance cannot find that order" in rec.mismatches[0]
 
 
 def test_sell_fills_and_fills_before_the_trade_are_not_evidence(tmp_path):
-    b, v = book(tmp_path), Venue()
+    b, v = book(tmp_path), Venue(btc="0.99")                         # someone sold 0.01 of the baseline coins
     t = old_pending(b)
     v.history = [fill(t, buyer=False), fill(t, after_s=-(rc.FILL_MARGIN_MS / 1000) - 5)]
+    v.by_id[99] = order("web_manual_sale", "FILLED", side="SELL", type_="MARKET", order_id=99)   # not the bot's
     rec = rc.reconcile(b, v, TOL, NOW)
-    assert rec.clean and rec.updates[0].status == NOT_OPENED
+    assert [u.status for u in rec.updates] == [NOT_OPENED]
+    assert rec.mismatches == ["BTC: Binance holds 0.99, the ledger expects 1 (difference -0.01); if the testnet "
+                              "account was reset, record a new baseline"]    # the sale itself is still flagged
 
 
 def test_more_coins_than_the_ledger_expects_means_uncertain(tmp_path):
@@ -453,7 +465,8 @@ def test_reconciliation_only_reads():
     called = {n.func.attr for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
               and isinstance(n.func.value, ast.Name) and n.func.value.id == "trader"}
     # trades_between (PR-1) reads the same myTrades endpoint by time; test_trading_adapter proves it only sends GETs
-    assert called == {"query", "open_orders", "account", "my_trades", "trades_between"}, called
+    # query_by_id (PR-1b) reads the same GET /api/v3/order by Binance's order ID; test_trading_adapter proves it
+    assert called == {"query", "query_by_id", "open_orders", "account", "my_trades", "trades_between"}, called
     assert set(rc.ReadOnlyTrader.__dict__) >= called
     for name in ("place", "cancel", "cancel_list", "place_protected_entry", "test_order"):
         assert f".{name}(" not in (SRC / "execution" / "reconcile.py").read_text()

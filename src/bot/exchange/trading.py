@@ -98,6 +98,41 @@ class OrderStatusUnknown(ExchangeError):
         self.symbol, self.client_order_id = symbol, client_order_id
 
 
+class MalformedResponse(ExchangeError):
+    """Binance answered, but the reply is missing a field or holds a value that cannot be read. Nothing from it is
+    used: the caller treats it like any other exchange error (fail closed) and the operator is alerted."""
+
+
+def _parsed(what: str, parse: Callable[[], Any]) -> Any:
+    """Run `parse` on a reply; a missing field or an unreadable value becomes MalformedResponse."""
+    try:
+        return parse()
+    except MalformedResponse:
+        raise
+    except (KeyError, IndexError, TypeError, ValueError, ArithmeticError, AttributeError) as e:
+        raise MalformedResponse(f"{what}: Binance's reply could not be read ({type(e).__name__}: {e})") from None
+
+
+def _amount(v: Any) -> Decimal:
+    """A quantity or price from a reply: a finite number, zero or more."""
+    d = D(v)
+    if not d.is_finite() or d < 0:
+        raise ValueError(f"{v!r} is not a usable amount")
+    return d
+
+
+def _int(v: Any) -> int:
+    if isinstance(v, bool) or not isinstance(v, (int, str)):
+        raise TypeError(f"{v!r} is not a whole number")
+    return int(v)
+
+
+def _bool(v: Any) -> bool:
+    if not isinstance(v, bool):
+        raise TypeError(f"{v!r} is not true or false")
+    return v
+
+
 class _Ambiguous(Exception):
     pass
 
@@ -173,6 +208,14 @@ class TradeRecord:
     is_buyer: bool
     qty: Decimal
     time_ms: int
+    commission: Decimal = Decimal("0")
+    commission_asset: str = ""
+
+    @staticmethod
+    def parse(r: dict[str, Any]) -> "TradeRecord":
+        return _parsed("myTrades", lambda: TradeRecord(
+            _int(r["orderId"]), _bool(r["isBuyer"]), _amount(r["qty"]), _int(r["time"]), _amount(r["commission"]),
+            str(r["commissionAsset"])))
 
 
 TRADES_PAGE = 1000     # Binance's most fills per myTrades request
@@ -200,14 +243,18 @@ class OrderState:
 
     @staticmethod
     def parse(d: dict[str, Any]) -> "OrderState":
-        return OrderState(
-            symbol=d["symbol"], order_id=int(d["orderId"]), client_order_id=d["clientOrderId"], status=d["status"],
-            side=d["side"], type=d["type"], orig_qty=D(d["origQty"]), executed_qty=D(d["executedQty"]),
-            quote_qty=D(d.get("cummulativeQuoteQty", "0")), price=D(d.get("price", "0")),
-            fills=tuple(TradeFill(D(f["price"]), D(f["qty"]), D(f["commission"]), f["commissionAsset"])
-                        for f in d.get("fills", ())),
-            stop_price=D(d["stopPrice"]) if D(d.get("stopPrice", "0")) > 0 else None,
-            order_list_id=int(d.get("orderListId", -1)))
+        """An order from a reply. A missing field or an unreadable value raises MalformedResponse."""
+        def build() -> "OrderState":
+            return OrderState(
+                symbol=str(d["symbol"]), order_id=_int(d["orderId"]), client_order_id=str(d["clientOrderId"]),
+                status=str(d["status"]), side=str(d["side"]), type=str(d["type"]), orig_qty=_amount(d["origQty"]),
+                executed_qty=_amount(d["executedQty"]), quote_qty=_amount(d.get("cummulativeQuoteQty", "0")),
+                price=_amount(d.get("price", "0")),
+                fills=tuple(TradeFill(_amount(f["price"]), _amount(f["qty"]), _amount(f["commission"]),
+                                      str(f["commissionAsset"])) for f in d.get("fills", ())),
+                stop_price=_amount(d["stopPrice"]) if _amount(d.get("stopPrice", "0")) > 0 else None,
+                order_list_id=_int(d.get("orderListId", -1)))
+        return _parsed("order", build)
 
 
 @dataclass(frozen=True)
@@ -376,7 +423,10 @@ class BinanceTrader:
             if DUPLICATE_ORDER.lower() in e.message.lower():     # sent before: find it, never send again
                 return self._confirm(req, "Binance reports a duplicate client order ID")
             raise OrderRejected(f"Binance refused the order: {e.message}", e.code) from None
-        return OrderState.parse(data)
+        try:
+            return OrderState.parse(data)
+        except MalformedResponse as e:                            # sent, but the reply is unreadable: look it up
+            return self._confirm(req, str(e))
 
     def place_protected_entry(self, req: ProtectedEntryRequest, rules: SymbolRules,
                               fee_rate: Decimal = Decimal("0.001")) -> OrderState:
@@ -393,9 +443,12 @@ class BinanceTrader:
             if DUPLICATE_ORDER.lower() in e.message.lower():
                 return self._confirm(entry_req, "Binance reports a duplicate client order ID")
             raise OrderRejected(f"Binance refused the protected entry: {e.message}", e.code) from None
-        reports = {r["clientOrderId"]: r for r in data.get("orderReports", ())}
-        if req.entry_client_id in reports:
-            return OrderState.parse(reports[req.entry_client_id])
+        try:
+            reports = _parsed("order list", lambda: {r["clientOrderId"]: r for r in data.get("orderReports", ())})
+            if req.entry_client_id in reports:
+                return OrderState.parse(reports[req.entry_client_id])
+        except MalformedResponse as e:                            # sent, but the reply is unreadable: look it up
+            return self._confirm(entry_req, str(e))
         return self._confirm(entry_req, "the reply did not include the entry order")
 
     def cancel_list(self, symbol: str, list_client_id: str) -> bool:
@@ -445,6 +498,18 @@ class BinanceTrader:
         except _Ambiguous as e:
             raise ExchangeError(f"query {symbol} {client_order_id}: {e}") from None
 
+    def query_by_id(self, symbol: str, order_id: int) -> OrderState | None:
+        """The order by Binance's own order ID (same endpoint as `query`), or None if Binance says it does not
+        exist. Reconciliation uses it to find out whose order a fill belongs to."""
+        try:
+            return OrderState.parse(self._call("GET", "/api/v3/order", {"symbol": symbol, "orderId": order_id}))
+        except _Refused as e:
+            if e.code == NO_SUCH_ORDER:
+                return None
+            raise ExchangeError(f"query {symbol} order {order_id}: {e.message}") from None
+        except _Ambiguous as e:
+            raise ExchangeError(f"query {symbol} order {order_id}: {e}") from None
+
     def cancel(self, symbol: str, client_order_id: str) -> OrderState | None:
         """Cancel by client ID. If Binance refuses (already filled or gone), returns the order as it is now."""
         try:
@@ -458,32 +523,40 @@ class BinanceTrader:
             return self.query(symbol, client_order_id)
 
     def open_orders(self, symbol: str | None = None) -> list[OrderState]:
-        return [OrderState.parse(d) for d in self._read("GET", "/api/v3/openOrders", {"symbol": symbol})]
+        return [OrderState.parse(d) for d in _rows("openOrders", self._read("GET", "/api/v3/openOrders",
+                                                                             {"symbol": symbol}))]
 
     def my_trades(self, symbol: str, order_id: int) -> list[TradeFill]:
-        rows = self._read("GET", "/api/v3/myTrades", {"symbol": symbol, "orderId": order_id})
-        return [TradeFill(D(r["price"]), D(r["qty"]), D(r["commission"]), r["commissionAsset"]) for r in rows]
+        rows = _rows("myTrades", self._read("GET", "/api/v3/myTrades", {"symbol": symbol, "orderId": order_id}))
+        return _parsed("myTrades", lambda: [TradeFill(_amount(r["price"]), _amount(r["qty"]), _amount(r["commission"]),
+                                                      str(r["commissionAsset"])) for r in rows])
 
     def trades_between(self, symbol: str, start_ms: int, end_ms: int) -> list[TradeRecord]:
         """The account's fills on `symbol` between two times (same endpoint as `my_trades`; Binance allows at most
         24 hours between them, verify on testnet), at most TRADES_PAGE fills."""
         rows = self._read("GET", "/api/v3/myTrades", {"symbol": symbol, "startTime": start_ms, "endTime": end_ms,
                                                       "limit": TRADES_PAGE})
-        return [TradeRecord(int(r["orderId"]), bool(r["isBuyer"]), D(r["qty"]), int(r["time"])) for r in rows]
+        return [TradeRecord.parse(r) for r in _rows("myTrades", rows)]
 
     def account(self) -> AccountInfo:
         d = self._read("GET", "/api/v3/account", {"omitZeroBalances": "true"})
-        return AccountInfo(
+        return _parsed("account", lambda: AccountInfo(
             can_trade=bool(d.get("canTrade")), can_withdraw=bool(d.get("canWithdraw")),
             account_type=str(d.get("accountType", "")), permissions=tuple(d.get("permissions", ())),
-            balances=tuple(Balance(b["asset"], D(b["free"]), D(b["locked"])) for b in d.get("balances", ())
-                           if D(b["free"]) + D(b["locked"]) > 0))
+            balances=tuple(Balance(str(b["asset"]), _amount(b["free"]), _amount(b["locked"]))
+                           for b in d.get("balances", ()) if _amount(b["free"]) + _amount(b["locked"]) > 0)))
 
     def _read(self, method: str, endpoint: str, params: dict[str, Any]) -> Any:
         try:
             return self._call(method, endpoint, params)
         except (_Ambiguous, _Refused) as e:
             raise ExchangeError(f"{endpoint}: {e}") from None
+
+
+def _rows(what: str, rows: Any) -> list[Any]:
+    if not isinstance(rows, list):
+        raise MalformedResponse(f"{what}: Binance's reply is not a list")
+    return rows
 
 
 _DEFINITE = {"BadRequestError", "UnauthorizedError", "ForbiddenError", "NotFoundError", "TooManyRequestsError",

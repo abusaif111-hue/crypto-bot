@@ -380,14 +380,21 @@ Reconciliation compares the ledger with Binance and only reads; it never places 
   never placed **only if** Binance also has none of its protective or closing orders, no buy fill on
   the coin since it was written, and no more of the coin than the ledger expects; otherwise the
   outcome is uncertain, it stays PENDING, and it is reported as a mismatch. While any trade is
-  PENDING, the runner makes no new entry at all, not even another idea in the same round;
+  PENDING, the runner makes no new entry at all, not even another idea in the same round.
+  Each fill on the coin in that time is traced to its order by Binance's order ID: the trade's own
+  entry settles it; another of the bot's trades, or an order that is not the bot's (for example your
+  own buy in the Binance app), is not evidence; anything that cannot be identified keeps it uncertain.
+  `bot live pending` (or `bot testnet pending`) shows every record behind a PENDING trade and what
+  reconciliation would decide, and changes nothing;
 - every open trade must have both protective orders open for the coins held. If one filled, Binance
   closed the trade; if both are gone and no closing sale filled, the coins are **unprotected**;
 - every open order on the account must be one of the bot's open trades;
 - each watched coin's balance must equal the baseline (coins that are not the bot's) plus the coins
   of open trades, within one step. USDT is not compared: it moves with prices, fees and P&L.
 
-Anything that differs blocks new entries until an operator looks. `testnet-roundtrip` reconciles
+Anything that differs blocks new entries until an operator looks. A reply from Binance that cannot be
+read (a missing field, a value that is not a number) changes nothing: entries pause, one red alert
+says so, and reconciliation tries again every round. `testnet-roundtrip` reconciles
 before it starts (and refuses if the result is not clean) and again after the close. Once, before
 the next round trip, record the baseline (the coins Binance gives every testnet account):
 

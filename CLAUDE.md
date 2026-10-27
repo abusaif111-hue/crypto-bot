@@ -142,6 +142,14 @@ bot paper status
    rounds, after restarts). A PENDING entry not found after `SETTLE_S` is NOT_OPENED only if no protective or
    closing order, no buy fill since it was written (`trades_between`, same myTrades endpoint) and no extra coins
    exist; otherwise it stays PENDING as an uncertain mismatch. Fixes for H2/H3 (exits) are not approved yet.
+   PR-1b: each fill in that window is traced to its order by Binance's order ID (`query_by_id`, the same GET
+   /api/v3/order). This trade's own entry (client ID, coin, BUY, finished, something bought) settles it from that
+   order; another trade in the ledger is not evidence; an ID the bot never makes is not evidence and its coins are
+   allowed for in the balance check; anything that cannot be identified (not found, lookup failed, reply does not
+   match, an unknown bot-made ID, too many orders) keeps it uncertain. A reply that cannot be read is a
+   `MalformedResponse` (an `ExchangeError`): nothing is applied, entries pause, `exchange_data_error` is alerted
+   once, and the runner keeps going; an unreadable reply to a sent order is looked up, never re-sent.
+   `bot live pending` / `bot testnet pending`: read-only view of every record behind a PENDING trade.
    5d done: `bot.execution.runner.TestnetRunner` (service `bot-testnet`, state `~/testnet`): every round it
    reconciles (unprotected coins are sold at once; mismatches block until an operator resumes), marks the
    capped account (`bot.execution.account`: capital + changes since the start), runs time stops, then H2b
@@ -158,7 +166,7 @@ bot paper status
    (`BINANCE_LIVE_TRADE_*`; `trading_key_problems` refuses one that can withdraw, transfer or use margin);
    `config/live.yaml` (not in git) may differ from default.yaml only in the switch; the live account
    (`~/live`, service `bot-live`) is capped at `LIVE_CAPITAL_CEILING_USDT` and sizes on the capital at most.
-   `bot live check|baseline|reconcile|start|run|status|resume|block`. Never write live.yaml, the phrase or
+   `bot live check|baseline|reconcile|start|run|status|pending|resume|block`. Never write live.yaml, the phrase or
    `live_trading: true` anywhere (a test checks the repo); never raise the ceiling without Sultan.
    **Sultan's decision (23 Oct 2026):** after the testnet gate (5 clean round trips), go live with a small,
    capped amount without waiting for the paper review; the H2b forward test keeps running. Sultan sets the

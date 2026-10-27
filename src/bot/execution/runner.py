@@ -5,7 +5,8 @@ Every round (default 60 seconds) it:
 1. reconciles the ledger with the testnet account (`bot.execution.reconcile`) and records what is
    certain. Coins found unprotected are sold at market at once. A mismatch or unprotected coins
    block new entries until an operator resumes; an exchange error or an order still unsettled
-   blocks entries for that round only;
+   blocks entries for that round only (a reply Binance sent that cannot be read is such an error: it
+   changes nothing and is reported once as `exchange_data_error`);
 2. marks the bot's equity (`bot.execution.account`: capped capital, P&L periods, drawdown,
    breakers) and carries out operator requests (resume, block entries);
 3. sells trades whose time stop has passed;
@@ -86,6 +87,7 @@ class TestnetRunner:
     _decided: dict[str, int] = field(default_factory=dict, init=False)
     _failed: dict[str, tuple[int, float]] = field(default_factory=dict, init=False)
     _blocked_reason: str = field(default="", init=False)
+    _data_error: str = field(default="", init=False)
     _last_status: float = field(default=0.0, init=False)
     _seen_history: int = field(default=0, init=False)
 
@@ -184,6 +186,13 @@ class TestnetRunner:
             self.account.modes.report_fault("UNPROTECTED_POSITION", rec.unprotected[0])
             for iid in rec.unprotected_ids:
                 self._close(self.ledger.trades[iid], now, "unprotected coins sold at market")
+        unreadable = "; ".join(rec.unreadable)
+        if unreadable != self._data_error:               # once per change: the alert says it, the pause holds
+            if unreadable:
+                self.log("exchange_data_error", reason=unreadable,
+                         note="Binance sent a reply the bot cannot read: nothing was changed, new entries are "
+                              "paused, and reconciliation tries again every round")
+            self._data_error = unreadable
         reason = "; ".join(rec.errors + rec.unsettled)
         if reason != self._blocked_reason:
             if reason:
