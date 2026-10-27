@@ -347,6 +347,33 @@ def test_an_exchange_error_while_gathering_evidence_settles_nothing(tmp_path):
     assert b.trades[t.intent_id].status == PENDING
 
 
+def test_an_uncertain_trade_raises_one_alert_not_one_per_round(tmp_path):
+    """The mismatch text is the alert's key: it must not change from round to round while nothing changes
+    (it used to carry the trade's age, so every round sent a new red alert)."""
+    import json
+
+    from bot import alerts
+
+    b, v = book(tmp_path), Venue(btc="1.01")
+    old_pending(b)
+    texts = [rc.reconcile(b, v, TOL, NOW + dt).mismatches for dt in (0, 60, 120, 3600)]
+    assert any("uncertain" in m for m in texts[0])                      # plus the coin comparison's own mismatch
+    assert all(t == texts[0] for t in texts)
+
+    home = tmp_path / "home"
+    journal = home / alerts.SOURCES["testnet"] / alerts.JOURNAL
+    journal.parent.mkdir(parents=True)
+    journal.write_text(json.dumps({"at": 0, "event": "started"}) + "\n")
+    w = alerts.Watcher.open(home, home / "alerts", NOW)
+    sent = []
+    for i, t in enumerate(texts[:3]):                                  # three rounds, a minute apart
+        with open(journal, "a") as f:                                  # one line per mismatch, as the runner logs
+            for m in t:
+                f.write(json.dumps({"at": NOW + 60 * i, "event": "reconciliation_mismatch", "detail": m}) + "\n")
+        sent += [a for a in w.poll(NOW + 60 * i + 1) if a.level == alerts.RED]
+    assert len(sent) == len(texts[0])                                  # once each, not once per round
+
+
 def test_an_uncertain_trade_is_settled_later_by_a_definitive_record(tmp_path):
     b, v = book(tmp_path), Venue(btc="1.01")
     t = old_pending(b)
