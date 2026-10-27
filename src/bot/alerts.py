@@ -104,6 +104,10 @@ def describe(source: str, e: dict[str, Any]) -> Alert | None:
     if ev == "exchange_data_error":
         return a(RED, f"Binance sent a reply the bot could not read; nothing was changed and new entries are paused "
                       f"until it reads cleanly again. {e.get('reason', '')}", f"{ev}:{e.get('reason')}")
+    if ev == "exit_waiting":
+        return a(YELLOW, f"{sym}: the outcome of a sale is not known yet; nothing more is sent until it is (up to 5 "
+                         f"minutes), and entries are blocked. {e.get('reason', '')}",
+                 f"{ev}:{e.get('trade')}:{e.get('attempt')}")
     if ev == "exit_failed":
         return a(RED, f"ACT NOW if this repeats: could not close {sym} ({e.get('why', '')}): {e.get('reason', '')}",
                  f"{ev}:{sym}")

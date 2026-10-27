@@ -10,8 +10,14 @@ Binance gives every account). Reconciliation expects, per watched coin: baseline
 OPEN trades + the dust closed trades left behind (less than one step each). The baseline is
 set only by an operator with a written reason, and only while no trade is PENDING or OPEN.
 
+Sales (PR-2, audit H2 and M1): every attempt to sell a trade's coins is written here before it is
+sent (`note_exit_attempt`), and attempt k has its own client ID (exit leg k), so no ID is ever sent
+twice; Binance accepts a repeated client ID once the first order has filled, which could sell coins
+twice. At most MAX_EXIT_ATTEMPTS per trade.
+
 The file is replaced atomically. An unreadable file is an error and is never reset: the
-caller must block new entries until it is fixed.
+caller must block new entries until it is fixed. Version 1 files (before PR-2) still load, with no
+sale attempts recorded; files are written as version 2.
 """
 from __future__ import annotations
 
@@ -27,7 +33,10 @@ from bot.core.ids import client_order_id
 from bot.core.money import ZERO, D
 
 LEDGER = "ledger.json"
-VERSION = 1
+VERSION = 2
+READABLE = (1, 2)                  # version 1: before sale attempts were recorded (PR-2)
+MAX_EXIT_ATTEMPTS = 3              # sales tried per trade, exit legs 0 to 2; after that, sell by hand
+EXIT_SETTLE_S = 300.0              # a recorded sale not found after this long may count as never placed
 PENDING, OPEN, CLOSED, NOT_OPENED = "PENDING", "OPEN", "CLOSED", "NOT_OPENED"
 NEXT = {PENDING: (OPEN, CLOSED, NOT_OPENED), OPEN: (CLOSED,), CLOSED: (), NOT_OPENED: ()}
 
@@ -52,6 +61,8 @@ class TrackedTrade:
     entry_price: Decimal = ZERO        # average fill, once OPEN
     stop_price: Decimal = ZERO         # the protective stop, once OPEN (the risk engine counts it)
     take_profit_price: Decimal = ZERO
+    exit_attempts: int = 0             # sales recorded as sent (attempt k uses exit leg k)
+    exit_sent_at: float = 0.0          # when the latest one was recorded
 
     def cid(self, kind: str, leg: int = 0) -> str:
         return client_order_id(uuid.UUID(hex=self.intent_id), kind, leg)
@@ -59,15 +70,22 @@ class TrackedTrade:
     @property
     def ids(self) -> dict[str, str]:
         """Every client order ID this trade can have on Binance."""
-        return {"list": self.cid("list"), "entry": self.cid("entry"), "stop": self.cid("protect", 0),
-                "take-profit": self.cid("protect", 1), "exit": self.cid("exit")}
+        out = {"list": self.cid("list"), "entry": self.cid("entry"), "stop": self.cid("protect", 0),
+               "take-profit": self.cid("protect", 1), "exit": self.cid("exit")}
+        out.update({f"exit-{k}": self.cid("exit", k) for k in range(1, MAX_EXIT_ATTEMPTS)})
+        return out
+
+    def exit_ids(self) -> list[str]:
+        """The client ID of every sale attempt this trade can have, attempt 0 first."""
+        return [self.cid("exit", k) for k in range(MAX_EXIT_ATTEMPTS)]
 
     def to_json(self) -> dict[str, Any]:
         return {"intent_id": self.intent_id, "symbol": self.symbol, "base_asset": self.base_asset,
                 "status": self.status, "created_at": self.created_at, "updated_at": self.updated_at,
                 "received_qty": str(self.received_qty), "left_qty": str(self.left_qty), "note": self.note,
                 "strategy": self.strategy, "expires_at": self.expires_at, "entry_price": str(self.entry_price),
-                "stop_price": str(self.stop_price), "take_profit_price": str(self.take_profit_price)}
+                "stop_price": str(self.stop_price), "take_profit_price": str(self.take_profit_price),
+                "exit_attempts": self.exit_attempts, "exit_sent_at": self.exit_sent_at}
 
     @staticmethod
     def from_json(d: dict[str, Any]) -> "TrackedTrade":
@@ -76,7 +94,8 @@ class TrackedTrade:
         return TrackedTrade(d["intent_id"], d["symbol"], d["base_asset"], d["status"], float(d["created_at"]),
                             float(d["updated_at"]), D(d["received_qty"]), D(d["left_qty"]), d.get("note", ""),
                             d.get("strategy", ""), float(d.get("expires_at", 0)), D(d.get("entry_price", "0")),
-                            D(d.get("stop_price", "0")), D(d.get("take_profit_price", "0")))
+                            D(d.get("stop_price", "0")), D(d.get("take_profit_price", "0")),
+                            int(d.get("exit_attempts", 0)), float(d.get("exit_sent_at", 0)))
 
 
 @dataclass
@@ -95,8 +114,8 @@ class Ledger:
             return Ledger(path, environment)
         try:
             d = json.loads(path.read_text())
-            if d.get("version") != VERSION:
-                raise LedgerError(f"ledger version {d.get('version')!r}, expected {VERSION}")
+            if d.get("version") not in READABLE:
+                raise LedgerError(f"ledger version {d.get('version')!r}, expected one of {READABLE}")
             if d.get("environment") != environment:
                 raise LedgerError(f"ledger is for {d.get('environment')!r}, not {environment!r}")
             trades = {t["intent_id"]: TrackedTrade.from_json(t) for t in d.get("trades", ())}
@@ -155,6 +174,20 @@ class Ledger:
             if k not in ("entry_price", "stop_price", "take_profit_price"):
                 raise LedgerError(f"unknown price {k!r}")
             setattr(t, k, D(v))
+        return t
+
+    def note_exit_attempt(self, intent_id: str, attempt: int, now: float) -> TrackedTrade:
+        """Record that sale `attempt` of a trade is about to be sent. Call and save BEFORE sending it. Attempts only
+        go forward (an ID is never reused) and stop at MAX_EXIT_ATTEMPTS."""
+        t = self.trades.get(intent_id)
+        if t is None:
+            raise LedgerError(f"intent {intent_id} is not in the ledger")
+        if t.status not in (PENDING, OPEN):
+            raise LedgerError(f"trade {intent_id} is {t.status}; nothing of it is sold any more")
+        if not t.exit_attempts <= attempt < MAX_EXIT_ATTEMPTS:
+            raise LedgerError(f"sale attempt {attempt} of trade {intent_id}: {t.exit_attempts} already recorded, "
+                              f"at most {MAX_EXIT_ATTEMPTS}")
+        t.exit_attempts, t.exit_sent_at, t.updated_at = attempt + 1, now, now
         return t
 
     # ------------------------------------------------------------ baseline

@@ -93,8 +93,9 @@ def received_qty(entry: OrderState, base_asset: str) -> Decimal:
 def submit(intent: TradeIntent, state: AccountState, snapshot: MarketSnapshot, rules: SymbolRules, cfg: AppConfig,
            trader: BinanceTrader, intent_id: uuid.UUID, corr_group: str,
            sleep: Callable[[float], None] = time.sleep, verify_attempts: int = 5,
-           verify_wait_s: float = 1.0) -> EntryOutcome:
-    """Risk engine, then one protected entry, then confirmation of the protection."""
+           verify_wait_s: float = 1.0, record_exit: Callable[[int], None] | None = None) -> EntryOutcome:
+    """Risk engine, then one protected entry, then confirmation of the protection. `record_exit(0)` records an
+    emergency sale in the ledger before it is sent (PR-2); a caller with a ledger must pass it."""
     decision = evaluate(intent, state, snapshot, rules, cfg, corr_group)
     if not decision.accepted:
         return EntryOutcome(REJECTED, decision.reason, decision)
@@ -116,7 +117,7 @@ def submit(intent: TradeIntent, state: AccountState, snapshot: MarketSnapshot, r
             out.status, out.reason = NOT_FILLED, f"entry ended {entry.status} with nothing bought"
             out.block_entries, out.notes = True, ["a fill-or-kill entry did not end FILLED or EXPIRED; check it"]
             return out
-        return _emergency_exit(out, trader, rules, f"entry ended {entry.status} after a partial fill")
+        return _emergency_exit(out, trader, rules, f"entry ended {entry.status} after a partial fill", record_exit)
     out.received_qty = received_qty(entry, rules.base_asset)
     problem = ""
     for _ in range(verify_attempts):
@@ -128,7 +129,7 @@ def submit(intent: TradeIntent, state: AccountState, snapshot: MarketSnapshot, r
         out.status, out.reason = PROTECTED, "filled; a protective order has already filled (position closed)"
         return out
     if problem:
-        return _emergency_exit(out, trader, rules, f"protection not confirmed: {problem}")
+        return _emergency_exit(out, trader, rules, f"protection not confirmed: {problem}", record_exit)
     out.status, out.reason = PROTECTED, "filled; stop-loss and take-profit confirmed open on Binance"
     return out
 
@@ -160,7 +161,8 @@ def _check_protection(out: EntryOutcome, trader: BinanceTrader, rules: SymbolRul
     return ""
 
 
-def _emergency_exit(out: EntryOutcome, trader: BinanceTrader, rules: SymbolRules, why: str) -> EntryOutcome:
+def _emergency_exit(out: EntryOutcome, trader: BinanceTrader, rules: SymbolRules, why: str,
+                    record_exit: Callable[[int], None] | None = None) -> EntryOutcome:
     """Cancel whatever protection exists and sell the coins at market. Always blocks new entries."""
     plan = out.plan
     out.block_entries = True
@@ -173,6 +175,13 @@ def _emergency_exit(out: EntryOutcome, trader: BinanceTrader, rules: SymbolRules
                         rules.market_step_size or rules.step_size)
     intent_id = uuid.UUID(hex=plan.entry_client_id[-32:])
     sell = OrderRequest(plan.symbol, "SELL", "MARKET", qty, client_order_id(intent_id, "exit"))
+    try:
+        if record_exit is not None:
+            record_exit(0)                              # sale attempt 0, written before it is sent (PR-2)
+    except Exception as e:
+        out.status, out.reason = UNPROTECTED, (f"{why}; the emergency sale could not be recorded ({type(e).__name__}: "
+                                               f"{e}), so it was NOT sent: sell {qty} {plan.symbol} by hand")
+        return out
     try:
         out.exit = trader.place(sell, rules)
     except (OrderRejected, OrderStatusUnknown, ExchangeError) as e:

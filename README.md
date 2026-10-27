@@ -388,6 +388,13 @@ Reconciliation compares the ledger with Binance and only reads; it never places 
   reconciliation would decide, and changes nothing;
 - every open trade must have both protective orders open for the coins held. If one filled, Binance
   closed the trade; if both are gone and no closing sale filled, the coins are **unprotected**;
+- every sale of a trade's coins (a strategy exit, a time stop, an emergency sale) is written to the
+  ledger *before* it is sent, and each attempt has its own order ID, because Binance accepts a
+  repeated ID once the first order filled. A missing sale is waited for 5 minutes and nothing else is
+  sent meanwhile (🟡 alert). A new attempt sells only what is left, and only when the earlier one is
+  known: it ended with coins left, or it was never placed and the coins are still on Binance. If the
+  coins are gone, nothing is sent and an operator must look. After 3 attempts the coins must be sold
+  by hand. The ledger file is version 2 from this change (older code cannot read it);
 - every open order on the account must be one of the bot's open trades;
 - each watched coin's balance must equal the baseline (coins that are not the bot's) plus the coins
   of open trades, within one step. USDT is not compared: it moves with prices, fees and P&L.
