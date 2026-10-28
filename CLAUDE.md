@@ -197,6 +197,7 @@ bot paper status
    equity each limit needs for it. Pilot equity at most `PILOT_MAX_USDT` (20); `--from-account` reads free USDT
    with the read-only key, capped. At 20 USDT no order passes (R-07: 25% of 20 is below the 5 USDT minimum at
    the engine's entry price). It places nothing; sending pilot orders is a separate module, not approved or built.
+   `bot plan --watch`: D1's conditions met and the levels still needed, with the projected plan and the engine's verdict.
 7. News + LLM, advisory/veto only
    Planned in `docs/intel-plan.md` (approved 24 Oct 2026): official news, market observations, a read-only
    risk monitor (may only block entries) and a daily report; none of it may import trading code.

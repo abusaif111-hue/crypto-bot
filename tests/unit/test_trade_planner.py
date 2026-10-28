@@ -256,3 +256,77 @@ def test_the_planner_is_not_wired_into_any_runner():
 def test_the_planner_never_changes_a_risk_setting():
     src = (SRC / "trade_planner.py").read_text()
     assert "AppConfig(" not in src and "replace(" not in src and "risk_per_trade_pct =" not in src
+
+
+# ---------------------------------------------------------------- the watchlist (setups that have not triggered)
+class Day:
+    def __init__(self, close):
+        self.close = Dec(str(close))
+
+
+def test_the_daily_close_needed_is_exactly_d1s_threshold():
+    s = dp.DailyPullback(["BTCUSDT"])
+    falling = [100 * (1 - 0.001) ** i for i in range(200)]                # EMA falling: needs a big close
+    for closes in (falling, [100 * (1 + 0.0005) ** i for i in range(200)][:-1] + [90.0]):
+        c = tp.trend_close_needed(s, [Dec(str(x)) for x in closes])
+        days = [Day(x) for x in closes]
+        assert s.uptrend(days + [Day(c + Dec("0.0001"))])[0]
+        assert not s.uptrend(days + [Day(c - Dec("0.0001"))])[0]
+
+
+def watch_at(cs, now, equity=20, data=None, symbol="BTCUSDT"):
+    return tp.watch_coin(dp.DailyPullback([symbol]), data or Data({symbol: cs}), symbol, AppConfig(),
+                         account(Dec(equity), Dec(0), Dec("0.001")), now)
+
+
+def test_a_live_signal_on_a_big_enough_account_is_ready():
+    cs, now = setup()
+    w = watch_at(cs, now, equity=1000)
+    assert w.status == tp.READY and w.pilot.accepted and w.entry > w.stop
+
+
+def test_without_the_trigger_it_watches_for_the_next_4h_close_above_the_last_high():
+    cs, now = setup()
+    cs = cs[:-1]
+    w = watch_at(cs, now + H4 / 1000, equity=1000)
+    assert w.status == tp.WATCHING, w.reason
+    assert any("50-day EMA" in m for m in w.met) and any(f"4h close above {cs[-1].high}" in n for n in w.needs)
+    assert w.entry > cs[-1].high and w.stop < w.entry < w.target and w.check.accepted
+    assert w.watch_until > now
+
+
+def test_on_the_pilot_the_same_setup_is_not_tradeable_and_says_why():
+    cs, now = setup()
+    w = watch_at(cs[:-1], now + H4 / 1000, equity=20)
+    assert w.status == tp.NOT_TRADEABLE and "not on the pilot account" in w.reason
+    assert "REJ_BELOW_EXCHANGE_MIN" in w.reason and not w.feasibility.viable
+
+
+def test_a_setup_the_engine_refuses_at_any_size_is_not_tradeable():
+    cs, now = setup(half_range=0.006)                                     # stop too tight for 1.5 after costs
+    w = watch_at(cs[:-1], now + H4 / 1000, equity=1000)
+    assert w.status == tp.NOT_TRADEABLE and "at any size (REJ_REWARD_RISK)" in w.reason
+
+
+def test_a_downtrend_lists_the_daily_close_it_needs():
+    from tests.unit.test_daily_pullback import N, candles
+    cs = candles([80_000 * (1 - 0.0005) ** i for i in range(N)], 0.009)
+    w = watch_at(cs, (cs[-1].close_time + 1) / 1000, equity=1000)
+    assert w.status in (tp.WATCHING, tp.NOT_TRADEABLE) and any("a daily close above" in n for n in w.needs)
+
+
+def test_the_watchlist_is_capped_at_the_pilot_and_renders_a_table():
+    cs, now = setup()
+    with pytest.raises(ValueError):
+        tp.watch(dp.DailyPullback(["BTCUSDT"]), Data({"BTCUSDT": cs}), AppConfig(), Dec(21), now)
+    ws = tp.watch(dp.DailyPullback(["BTCUSDT"]), Data({"BTCUSDT": cs[:-1]}), AppConfig(), Dec(20), now + H4 / 1000)
+    text = tp.render_watch(ws, Dec(20), now)
+    for part in ("Status", "Entry", "Stop", "Target", "Max loss", "Watch until", "NOT TRADEABLE", "Needs:",
+                 "Projections at the current levels, not orders"):
+        assert part in text, part
+
+
+def test_cli_watch(tmp_path):
+    out = io.StringIO()
+    assert cli._plan(args(tmp_path, watch=True), make_exchange=lambda environment: FakeMarket(), out=out) == 0
+    assert "watchlist" in out.getvalue() and "NO DATA" in out.getvalue()

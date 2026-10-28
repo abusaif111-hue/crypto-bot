@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from bot.analysis.indicators import atr
+from bot.analysis.resample import DAY_MS, daily
 from bot.core.config import AppConfig
 from bot.core.money import ZERO, D, floor_price, floor_to_step, fmt, pct, plain
 from bot.daily_signal import MarketData, account, corr_group
@@ -31,7 +32,8 @@ from bot.exchange.interface import INTERVAL_MS
 from bot.risk.engine import evaluate
 from bot.risk.models import AccountState, Decision
 from bot.strategies.base import entry_limit
-from bot.strategies.daily_pullback import ATR_N, DailyPullback, Verdict
+from bot.strategies.daily_pullback import (ATR_N, MAX_STOP_PCT, PULLBACK_CANDLES, SLOPE_DAYS, TAKE_PROFIT_R,
+                                          DailyPullback, Verdict, ema)
 
 PILOT_MAX_USDT = Decimal("20")         # Sultan's pilot allocation: never more, never raised automatically
 PILOT_MAX_RISK_PCT = Decimal("0.5")    # his maximum risk per trade, fees and slippage included
@@ -262,3 +264,146 @@ def record(log_dir: Path, plans: list[TradePlan], equity: Decimal) -> Path:
         for p in plans:
             f.write(json.dumps(log_row(p, equity)) + "\n")
     return path
+
+
+# ---------------------------------------------------------------- the watchlist: setups that have not triggered yet
+READY, WATCHING, NOT_TRADEABLE, NO_DATA = "READY", "WATCHING", "NOT TRADEABLE", "NO DATA"
+CHECK_EQUITY = Decimal("1000")     # a hypothetical account, used only for the checks that do not depend on size
+
+
+@dataclass(frozen=True)
+class Watch:
+    """One coin's D1 setup ahead of time: which of D1's conditions hold, the price levels still needed, and the
+    plan it would give if it triggered at the current levels (a projection, never an order)."""
+    symbol: str
+    at: float
+    status: str
+    reason: str
+    price: Decimal | None = None
+    met: tuple[str, ...] = ()
+    needs: tuple[str, ...] = ()
+    entry: Decimal | None = None       # projected (READY: the real plan's)
+    stop: Decimal | None = None
+    target: Decimal | None = None
+    watch_until: float | None = None   # the next 4h close: the levels are recomputed then
+    check: Decision | None = None      # the engine on a hypothetical CHECK_EQUITY account (reward-to-risk etc.)
+    pilot: Decision | None = None      # the engine on the pilot account
+    feasibility: Feasibility | None = None
+
+
+def trend_close_needed(strategy: DailyPullback, closes: list[Decimal]) -> Decimal | None:
+    """The lowest next daily close that makes D1's uptrend true (close above its EMA, EMA higher than SLOPE_DAYS
+    days earlier). Exact for D1's fixed-window EMA: the new close enters only its last step, with weight k."""
+    n = strategy.trend_days
+    e = ema(closes + [ZERO], n)                        # the earlier values do not depend on the new close
+    if len(e) < SLOPE_DAYS + 2:
+        return None
+    k = D(2) / (n + 1)
+    prev, earlier = e[-2], e[-1 - SLOPE_DAYS]
+    return max(prev, prev + (earlier - prev) / k)
+
+
+def _next_close(now: float, ms: int) -> float:
+    t = int(now * 1000)
+    return (t - t % ms + ms) / 1000
+
+
+def watch_coin(strategy: DailyPullback, data: MarketData, symbol: str, cfg: AppConfig, state: AccountState,
+               now: float) -> Watch:
+    p = plan_coin(strategy, data, symbol, cfg, state, now)
+    if p.trade:
+        d = p.decision
+        return Watch(symbol, now, READY, p.reason, p.price, entry=D(d.details["entry"]), stop=D(d.details["stop"]),
+                     target=D(d.details["take_profit"]), watch_until=p.expires_at, pilot=d,
+                     feasibility=p.feasibility)
+    try:
+        cs = data.closed_candles(symbol, strategy.interval, limit=strategy.history_needed())
+        rules, snap = data.rules(symbol), data.snapshot(symbol)
+    except Exception as e:
+        return Watch(symbol, now, NO_DATA, f"market data unavailable ({type(e).__name__}: {e})")
+    if len(cs) < strategy.history_needed() - 6:
+        return Watch(symbol, now, NO_DATA, "not enough 4h history", snap.best_ask)
+    four = INTERVAL_MS[strategy.interval]
+    until = _next_close(now, four)
+    met, needs = [], []
+    up, why = strategy.uptrend(daily(cs))
+    if up:
+        met.append(why)
+    else:
+        c = trend_close_needed(strategy, [d.close for d in daily(cs)])
+        if c is None:
+            return Watch(symbol, now, NO_DATA, "not enough daily history", snap.best_ask)
+        needs.append(f"a daily close above {plain(ceil_tick(c, rules.tick_size))} at "
+                     f"{_when(_next_close(now, DAY_MS))} or later (now: {why})")
+    e4 = ema([c.close for c in cs], strategy.pullback_ema)
+    touched = [c for c, lvl in zip(cs[-PULLBACK_CANDLES:], e4[-PULLBACK_CANDLES:]) if c.low <= lvl]
+    if touched:
+        met.append(f"a 4h low touched the {strategy.pullback_ema}-EMA at {_when(touched[-1].open_time / 1000)}")
+    else:
+        needs.append(f"a 4h low at or below the 4h {strategy.pullback_ema}-EMA (now {plain(ceil_tick(e4[-1], rules.tick_size))})")
+    trigger = cs[-1].high
+    needs.append(f"then a 4h close above {plain(trigger)} (the last 4h high; this level is reset at every 4h close)")
+    a = atr(cs[-ATR_N * 3:], ATR_N)[-1]
+    if a is None or a <= 0:
+        return Watch(symbol, now, NO_DATA, "no valid 4h ATR", snap.best_ask, tuple(met), tuple(needs))
+    entry = entry_limit(trigger)
+    stop = entry - strategy.stop_atr * a
+    target = entry + TAKE_PROFIT_R * (entry - stop)
+    entry, stop, target = (floor_price(x, rules.tick_size) for x in (entry, stop, target))   # as evaluate()
+    feas = feasibility(symbol, entry, stop, rules, cfg, state.taker_fee_rate, state.equity)
+    base = dict(price=snap.best_ask, met=tuple(met), needs=tuple(needs), entry=entry, stop=stop, target=target,
+                watch_until=until, feasibility=feas)
+    if (entry - stop) / entry > pct(MAX_STOP_PCT):
+        return Watch(symbol, now, NOT_TRADEABLE, f"D1's stop would be more than {MAX_STOP_PCT}% below the entry", **base)
+    intent = strategy.intent(symbol, Verdict(True, "projected", entry, stop, target, a))
+    check = evaluate(intent, account(CHECK_EQUITY, ZERO, state.taker_fee_rate), snap, rules, cfg, corr_group(symbol))
+    pilot = evaluate(intent, state, snap, rules, cfg, corr_group(symbol))
+    base.update(check=check, pilot=pilot)
+    if not check.accepted:
+        return Watch(symbol, now, NOT_TRADEABLE, f"even if it triggered at these levels the risk engine would refuse "
+                     f"it at any size ({check.code.value}): {check.reason}", **base)
+    if not pilot.accepted:
+        return Watch(symbol, now, NOT_TRADEABLE, f"it would pass on a larger account, but not on the pilot account "
+                     f"({pilot.code.value}): {pilot.reason}", **base)
+    return Watch(symbol, now, WATCHING, "every check passes at these levels; waiting for the conditions above", **base)
+
+
+def watch(strategy: DailyPullback, data: MarketData, cfg: AppConfig, equity: Decimal, now: float,
+          loss_today: Decimal = ZERO, fee: Decimal = Decimal("0.001")) -> list[Watch]:
+    if not 0 < D(equity) <= PILOT_MAX_USDT:
+        raise ValueError(f"the pilot equity must be above 0 and at most {PILOT_MAX_USDT} USDT")
+    state = account(D(equity), D(loss_today), D(fee))
+    return [watch_coin(strategy, data, s, cfg, state, now) for s in strategy.symbols]
+
+
+def render_watch(ws: list[Watch], equity: Decimal, now: float) -> str:
+    L = [f"DailyTradePlanner watchlist (D1 rules, unchanged), {_when(now)}; pilot {fmt(equity)} USDT. READ-ONLY.", "",
+         f"{'Coin':<8} {'Status':<14} {'Price':>10} {'Entry':>10} {'Stop':>10} {'Target':>10} {'Size':>10} "
+         f"{'Max loss':>9}  Watch until"]
+    for w in ws:
+        d = w.pilot if w.pilot is not None and w.pilot.accepted else None
+        cells = [plain(x) if x is not None else "-" for x in (w.price, w.entry, w.stop, w.target)]
+        size = plain(d.qty) if d else (plain(w.feasibility.qty) + "*" if w.feasibility else "-")
+        loss = fmt(d.planned_risk) if d else (fmt(w.feasibility.worst_loss) + "*" if w.feasibility else "-")
+        L.append(f"{w.symbol:<8} {w.status:<14} {cells[0]:>10} {cells[1]:>10} {cells[2]:>10} {cells[3]:>10} "
+                 f"{size:>10} {loss:>9}  {_when(w.watch_until)}")
+    L += ["* the smallest order Binance accepts, not a size the risk engine approved", ""]
+    for w in ws:
+        L += [f"{w.symbol}: {w.status}", f"  Why: {w.reason}"]
+        L += [f"  Met:   {m}" for m in w.met] + [f"  Needs: {n}" for n in w.needs]
+        if w.check is not None and w.check.reward_risk is not None:
+            L.append(f"  Net reward/risk at these levels: {w.check.reward_risk:.2f} (the engine needs "
+                     f"at least 1.5)")
+        if w.feasibility is not None:
+            f = w.feasibility
+            L.append(f"  Capital the smallest order needs: {fmt(f.needed_equity)} USDT ({LIMIT_NAMES[f.binding]})")
+        L.append("  Entry type: BUY LIMIT fill-or-kill, sent only after the 4h close confirms (not a resting order)")
+        L.append("")
+    L.append("Projections at the current levels, not orders or predictions. D1 has no backtest, paper or live result.")
+    return "\n".join(L) + "\n"
+
+
+def ceil_tick(value: Decimal, tick: Decimal) -> Decimal:
+    """A price level rounded UP to the tick (a threshold the close must exceed)."""
+    q = floor_price(value, tick)
+    return q if q >= value else q + tick

@@ -1183,6 +1183,10 @@ def _plan(args: argparse.Namespace, make_exchange=None, load_creds=None, out=Non
     else:
         ex = make_exchange(environment="live")
     data = MarketDataService(ex, cfg)
+    if getattr(args, "watch", False):
+        out.write(tp.render_watch(tp.watch(DailyPullback(list(cfg.universe)), data, cfg, equity, now, loss_today, fee),
+                                  equity, now))
+        return 0
     plans = tp.plan(DailyPullback(list(cfg.universe)), data, cfg, equity, now, loss_today, fee)
     out.write(tp.render(plans, equity, loss_today, now, cfg))
     if not args.no_log:
@@ -1921,6 +1925,7 @@ def main(argv: list[str] | None = None) -> int:
     pl.add_argument("--fee", default="0.001", help="taker fee as a fraction (0.001 = 0.1%%)")
     pl.add_argument("--log-dir", default="~/pilot-plans", help="where plans.jsonl is appended")
     pl.add_argument("--no-log", action="store_true", help="print only; write nothing")
+    pl.add_argument("--watch", action="store_true", help="the setups not triggered yet: levels still needed, projected plan")
     en = sub.add_parser("entries", help="why H2b is not entering, per account and coin (read-only; changes nothing)")
     en.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
     en.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")

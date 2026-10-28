@@ -658,6 +658,13 @@ cd ~/crypto-bot && .venv/bin/bot plan --from-account              # your real fr
 Each run is appended to `~/pilot-plans/plans.jsonl`. Nothing is sent to Binance; no runner trades these
 plans. D1 has no backtest, paper or live result.
 
+`bot plan --watch` looks ahead: per coin, which of D1's conditions already hold, the exact levels still
+needed (for example a daily close above the level that turns the trend up, then a 4h close above the
+last 4h high), and the plan that would follow if it triggered at those levels, checked by the risk
+engine on the pilot and on a larger hypothetical account. Status READY (a plan now), WATCHING (every
+check passes at those levels) or NOT TRADEABLE (with the engine's reason). These are projections, not
+orders.
+
 ## Why is H2b not entering? (`bot entries`, read-only)
 
 `bot entries` puts every daily decision since each account started (live, testnet, the H2b forward
