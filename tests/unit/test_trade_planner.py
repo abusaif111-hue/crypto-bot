@@ -247,10 +247,10 @@ def test_the_planner_cannot_reach_orders_credentials_or_h2b():
 
 def test_the_planner_is_not_wired_into_any_runner():
     users = [p.relative_to(SRC).as_posix() for p in SRC.rglob("*.py") if "bot.trade_planner" in _imports(p)]
-    assert users == []                                   # cli.py imports it as "from bot import trade_planner"
+    assert users == ["h1dt_plans.py"]                    # cli.py imports it as "from bot import trade_planner"
     text_users = [p.relative_to(SRC).as_posix() for p in SRC.rglob("*.py") if "trade_planner" in p.read_text()
                   and p.name != "trade_planner.py"]
-    assert text_users == ["cli.py"]
+    assert sorted(text_users) == ["cli.py", "h1dt_plans.py"]                # both read-only (tested)
 
 
 def test_the_planner_never_changes_a_risk_setting():

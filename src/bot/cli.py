@@ -12,6 +12,7 @@
     bot signals                                           (how close H2b is to buying each coin; read-only)
     bot daily-signal [--equity 1000]                      (D1 daily trend pullback: LONG or NO TRADE; simulated)
     bot plan [--equity 20] [--from-account]               (DailyTradePlanner: full plans for the 20 USDT pilot; read-only)
+    bot plan --strategy H1DT [--from-account]            (H1-DailyTrader's future setups, BTC and ETH; read-only)
     bot monitor                                           (risk monitor across accounts and coins; read-only)
     bot market                                            (daily market observations; read-only)
     bot report [--send]                                   (the daily report; Telegram once a day with --send)
@@ -21,6 +22,7 @@
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
     bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b, H4)
     bot backtest h4-memory                                (once: H4 on four coins or BTC/ETH only, by measured memory)
+    bot backtest h1dt [--only H1DT-BRK ...]               (H1-DailyTrader's setups vs D1; candles before 2024-10-01)
     bot backtest holdout                                  (the one-time holdout test; Sultan only)
 
 `try-trade` runs a proposed trade through the real risk engine with example
@@ -1169,7 +1171,8 @@ def _plan(args: argparse.Namespace, make_exchange=None, load_creds=None, out=Non
     if args.from_account:
         try:
             ex = make_exchange(environment="live", credentials=(load_creds or load_credentials)())
-            free = sum((b.free for b in ex.balances() if b.asset == "USDT"), D(0))
+            balances = ex.balances()
+            free = sum((b.free for b in balances if b.asset == "USDT"), D(0))
             fee = ex.taker_fee(cfg.universe[0])
         except (CredentialsError, ExchangeError) as e:
             print(f"Error: could not read the account with the read-only key: {e}", file=sys.stderr)
@@ -1181,8 +1184,13 @@ def _plan(args: argparse.Namespace, make_exchange=None, load_creds=None, out=Non
                   f"{plain(min(free, equity))} USDT of it.\n")
         equity = min(free, equity)
     else:
-        ex = make_exchange(environment="live")
+        ex, balances = make_exchange(environment="live"), []
     data = MarketDataService(ex, cfg)
+    if getattr(args, "strategy", "D1") == "H1DT":
+        from bot import h1dt_plans
+        held = {b.asset: b.total for b in balances if b.asset != "USDT" and b.total > 0}
+        out.write(h1dt_plans.render(h1dt_plans.plans(data, cfg, equity, now, loss_today, fee, held), equity, now))
+        return 0
     if getattr(args, "watch", False):
         out.write(tp.render_watch(tp.watch(DailyPullback(list(cfg.universe)), data, cfg, equity, now, loss_today, fee),
                                   equity, now))
@@ -1763,6 +1771,49 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
     return 0
 
 
+H1DT_FALLBACK_MB = 400               # without H4's measurement: a cautious figure for 1h BTC and ETH plus 4h
+
+
+def _backtest_h1dt(args: argparse.Namespace, out=None) -> int:
+    """H1-DailyTrader's three setups and D1 (baseline) through the selection rule, on candles before 2024-10-01."""
+    from bot.backtest import daily_trader_study as study
+    from bot.backtest import h4_coins, history, report
+    from bot.backtest.universe import available_memory_mb
+
+    data_dir = Path(os.path.expanduser(args.data_dir))
+    out = out or sys.stdout
+    try:
+        need = h4_coins.needed_mb(h4_coins.load(data_dir))   # measured on 1h BTC and ETH (24 Oct 2026)
+    except h4_coins.H4CoinsError:
+        need = H1DT_FALLBACK_MB
+    free = available_memory_mb()
+    if free is not None and free < need + 30:
+        print(f"Error: this run needs about {need} MB of memory plus a margin, and only {free} MB is free. "
+              f"Stop other programs or add swap, then try again.", file=sys.stderr)
+        return 2
+    try:
+        candles = {iv: {s: history.load(data_dir, s, iv) for s in study.SYMBOLS} for iv in ("1h", "4h")}
+        rules = {s: history.load_rules(data_dir, s) for s in study.SYMBOLS}
+    except history.DataError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    cfg = load_config(args.config)
+
+    def say(msg):
+        out.write(f"  {time.strftime('%H:%M:%S', time.gmtime())} {msg}\n")
+        out.flush()
+
+    cost = report.CostModel()
+    rows = study.run_study(candles, rules, cfg, cost, random_runs=args.random_runs, progress=say,
+                           only=set(args.only) if args.only else None)
+    text = study.render(rows)
+    meta = report.provenance(cfg, {s: study.study_only(cs) for s, cs in candles["1h"].items()}, cost)
+    folder = report.write_files(Path(os.path.expanduser(args.reports_dir)), "h1dt-study", text,
+                                {"meta": meta, **study.summary(rows)})
+    out.write("\n" + text + f"\nReport saved in {folder}\n")
+    return 0
+
+
 def _backtest_h4_memory(args: argparse.Namespace, out=None) -> int:
     """Once: measures whether H4 fits on the four screened coins with 1h candles, else BTC and ETH only."""
     from bot.backtest import h4_coins, history, universe
@@ -1925,6 +1976,7 @@ def main(argv: list[str] | None = None) -> int:
     pl.add_argument("--fee", default="0.001", help="taker fee as a fraction (0.001 = 0.1%%)")
     pl.add_argument("--log-dir", default="~/pilot-plans", help="where plans.jsonl is appended")
     pl.add_argument("--no-log", action="store_true", help="print only; write nothing")
+    pl.add_argument("--strategy", default="D1", choices=["D1", "H1DT"], help="D1 (default) or H1-DailyTrader's setups")
     pl.add_argument("--watch", action="store_true", help="the setups not triggered yet: levels still needed, projected plan")
     en = sub.add_parser("entries", help="why H2b is not entering, per account and coin (read-only; changes nothing)")
     en.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
@@ -2033,6 +2085,11 @@ def main(argv: list[str] | None = None) -> int:
     br.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     br.add_argument("--screened", action="store_true",
                     help="use the coins and correlation groups picked by bot backtest screen")
+    bd = bsub.add_parser("h1dt", help="H1-DailyTrader's setups vs D1 (walk-forward, candles before 2024-10-01)")
+    bd.add_argument("--only", nargs="+", choices=["H1DT-BRK", "H1DT-CONT", "H1DT-RNG", "D1"],
+                    help="run only these (default: all four)")
+    bd.add_argument("--random-runs", type=int, default=50, help="random-entry runs with the same exits")
+    bd.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     bm = bsub.add_parser("h4-memory", help="once: do four coins on 1h candles fit the memory for H4? (else BTC, ETH)")
     bm.add_argument("--operator", required=True)
     bh = bsub.add_parser("holdout", help="the one-time holdout test (Sultan only; recorded; a second run is VOID)")
@@ -2048,7 +2105,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "backtest":
             return {"screen": _backtest_screen, "fetch": _backtest_fetch, "baselines": _backtest_baselines,
-                    "run": _backtest_run, "h4-memory": _backtest_h4_memory,
+                    "run": _backtest_run, "h4-memory": _backtest_h4_memory, "h1dt": _backtest_h1dt,
                     "holdout": _backtest_holdout}[args.backtest_cmd](args)
         if args.cmd == "forward":
             return {"start": _forward_start, "run": _forward_run, "status": _forward_status, "report": _forward_report,

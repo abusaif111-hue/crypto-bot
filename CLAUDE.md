@@ -189,7 +189,8 @@ bot paper status
    `bot daily-signal` (`bot.daily_signal`, strategy D1 `bot.strategies.daily_pullback`; Sultan's request, 27 Oct
    2026): simulated LONG or NO TRADE per coin (daily EMA uptrend, 4h pullback and resume, stop 1.5 x ATR, 2R
    target), sized and checked by `evaluate()` on a hypothetical account; Spot long-only; appends only to its own
-   log. Not wired into any runner, backtest or forward test, and untested on history (same family as H4). Wiring it
+   log. Not wired into any runner or forward test (backtested only as the baseline of `bot backtest h1dt`), and untested
+   on history so far (same family as H4). Wiring it
    into trading, or changing its rules, needs Sultan's approval.
    `bot plan` (`bot.trade_planner`, DailyTradePlanner; Sultan's 20 USDT live-pilot request, 28 Oct 2026): read-only
    full plans from D1's verdict (entry FOK, stop, target, size, fees, slippage, max loss, net R:R, expiry,
@@ -198,6 +199,14 @@ bot paper status
    with the read-only key, capped. At 20 USDT no order passes (R-07: 25% of 20 is below the 5 USDT minimum at
    the engine's entry price). It places nothing; sending pilot orders is a separate module, not approved or built.
    `bot plan --watch`: D1's conditions met and the levels still needed, with the projected plan and the engine's verdict.
+   H1-DailyTrader (Sultan's decision, 28 Oct 2026): `bot.strategies.daily_trader` (setups BRK, CONT, RNG on 1h with a
+   4h context resampled from 1h; ATR stops, `target_r` targets, 24h time stop; at most 3 settings each). No 15m
+   confirmation (15m history does not fit the server) and no pullback setup (that is H4, rejected). Study:
+   `bot backtest h1dt` (`bot.backtest.daily_trader_study`): the selection rule unchanged, D1 as the baseline, candles
+   before 2024-10-01 only (`STUDY_END_MS`: the holdout and the intraday plan's final window stay unread); never
+   tune or re-run a setup after its result. Future plans: `bot plan --strategy H1DT` (`bot.h1dt_plans`, read-only:
+   READY / WATCHING / NOT TRADEABLE, engine verdicts, order eligibility incl. coins already held with H2b). Nothing
+   trades it; wiring it into any runner needs Sultan's approval and a passing study.
 7. News + LLM, advisory/veto only
    Planned in `docs/intel-plan.md` (approved 24 Oct 2026): official news, market observations, a read-only
    risk monitor (may only block entries) and a daily report; none of it may import trading code.

@@ -2,14 +2,15 @@
 
 At each finished candle, each coin has a fixed chance of a buy idea. With
 `exits` set to a strategy, stops, holding horizon, trailing and exit signals
-are that strategy's, so the comparison isolates the strategy's entries: a
-strategy that cannot beat this has no edge. Without `exits`, a plain ATR exit
+(and the target, for a strategy with its own `take_profit` rule) are that
+strategy's, so the comparison isolates the strategy's entries: a strategy that
+cannot beat this has no edge. Without `exits`, a plain ATR exit
 is used. Runs with fixed seeds, so results repeat exactly.
 """
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
 from bot.exchange.interface import INTERVAL_MS, Candle
@@ -74,6 +75,9 @@ class RandomEntry:
             plan = self.exit_plan(candles, entry)
             if plan:
                 intent = make_intent(s, entry, plan[0], self.name, plan[1], "random baseline: no signal to invalidate")
+                target = getattr(self.exits, "take_profit", None)       # a strategy with its own target rule
+                if intent is not None and target is not None:
+                    intent = replace(intent, take_profit_price=target(entry, plan[0]))
                 if intent is not None:
                     out.append(intent)
         return out

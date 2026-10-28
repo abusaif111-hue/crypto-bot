@@ -665,6 +665,37 @@ engine on the pilot and on a larger hypothetical account. Status READY (a plan n
 check passes at those levels) or NOT TRADEABLE (with the engine's reason). These are projections, not
 orders.
 
+## H1-DailyTrader (1h setups; study and future plans)
+
+`src/bot/strategies/daily_trader.py`: three intraday setups on finished 1h candles, each its own strategy
+with a 4h context built from the 1h candles. Spot, long-only, no 50-day filter:
+
+- **BRK, breakout:** 4h close above its 20-EMA; a 1h close breaks the highest high of the previous 24 hours
+  (a fresh break only).
+- **CONT, continuation:** a rising 4h 20-EMA with the price above it; a 1h close above a rising 1h 50-EMA
+  breaks the previous 3 hours' high.
+- **RNG, range:** a flat 4h 20-EMA; a 48-hour range at least 4 x the 1h ATR wide; a 1h candle dips into the
+  bottom quarter and closes up. The stop is below the range low; the target must lie inside the range.
+
+Stops are 1.5 x the 1h ATR(14) (RNG: below the range low), targets 3 x the stop distance, time stop 24 hours.
+The risk engine sizes every idea from the real stop distance and refuses any whose reward-to-risk after its
+slippage and fees is below 1.5. No 15-minute confirmation: 15m history does not fit the 512 MB server, and a
+rule that cannot be tested is not traded. No pullback setup: that is H4, already rejected.
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot backtest h1dt                     # all four, several hours; or --only H1DT-BRK
+cd ~/crypto-bot && .venv/bin/bot plan --strategy H1DT --from-account   # future setups, read-only
+```
+
+`bot backtest h1dt` runs each setup and D1 (the baseline) through the same selection rule as H2b and H4
+(walk-forward, doubled costs, robustness, one-coin and one-month checks, random entries with the same exits)
+on candles before 2024-10-01 only: the holdout and the intraday plan's reserved final window are not read.
+`bot plan --strategy H1DT` shows, per coin and setup, READY (on the last 1h candle), WATCHING (the level the
+next 1h close must reach and the plan it would give) or NOT TRADEABLE (refused by the engine at any size),
+with entry, stop, target, net reward-to-risk, the smallest order, its maximum loss, fees, slippage, expiry,
+invalidation, the pilot's verdict and whether an exchange order would be eligible (not when the account
+already holds the coin, which it shares with H2b). Nothing is sent to Binance; no runner trades it.
+
 ## Why is H2b not entering? (`bot entries`, read-only)
 
 `bot entries` puts every daily decision since each account started (live, testnet, the H2b forward

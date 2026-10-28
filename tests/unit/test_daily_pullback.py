@@ -321,4 +321,6 @@ def test_d1_cannot_reach_orders_credentials_or_h2b():
 def test_d1_is_not_wired_into_any_runner_or_backtest():
     users = [p.relative_to(SRC).as_posix() for p in SRC.rglob("*.py")
              if any("daily_pullback" in m or m == "bot.daily_signal" for m in _imports(p))]
-    assert sorted(users) == ["cli.py", "daily_signal.py", "trade_planner.py"]    # the planner is read-only too
+    # read-only users, plus the H1-DailyTrader study, where D1 is only the baseline (Sultan, 28 Oct 2026); no runner
+    assert sorted(users) == ["backtest/daily_trader_study.py", "cli.py", "daily_signal.py", "h1dt_plans.py",
+                             "trade_planner.py"]
