@@ -6,7 +6,7 @@
     bot check-trading [--symbol BTCUSDT]                  (testnet trading key and a test order; places nothing)
     bot testnet-roundtrip [--symbol BTCUSDT]              (one protected trade on the testnet, fake money)
     bot reconcile [--set-baseline --operator NAME --reason "..."]   (testnet ledger vs account; places nothing)
-    bot testnet start | run | status | resume | block     (H2b on the testnet: real orders, fake money)
+    bot testnet start | run | status | pending | resume | block   (H2b on the testnet: real orders, fake money)
     bot alerts setup | test | run                         (Telegram alerts)
     bot dashboard [--port 8050]                           (private, read-only page; open it through an SSH tunnel)
     bot signals                                           (how close H2b is to buying each coin; read-only)
@@ -16,7 +16,7 @@
     bot market                                            (daily market observations; read-only)
     bot report [--send]                                   (the daily report; Telegram once a day with --send)
     bot news check | show                                 (official news sources: check them, show the last day)
-    bot live check | baseline | reconcile | start | run | status | resume | block   (REAL money; Sultan's switch)
+    bot live check | baseline | reconcile | start | run | status | pending | resume | block   (REAL money)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
     bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b, H4)
@@ -289,8 +289,14 @@ def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=N
     intent_id = new_intent_id()
     book.add_pending(intent_id, args.symbol, rules.base_asset, time.time())
     book.save()                                              # written before anything is sent
+
+    def record_exit(attempt: int) -> None:                   # a sale is recorded before it is sent (PR-2)
+        book.note_exit_attempt(intent_id.hex, attempt, time.time())
+        book.save()
+
     try:
-        outcome = entry.submit(intent, state, snap, rules, wide, trader, intent_id, "majors", sleep=sleep)
+        outcome = entry.submit(intent, state, snap, rules, wide, trader, intent_id, "majors", sleep=sleep,
+                               record_exit=record_exit)
     except OrderStatusUnknown as e:
         out.write(f"  Entry .......... OUTCOME UNKNOWN: {e}\n  The trade stays PENDING in the ledger; run "
                   f"bot reconcile to settle it before anything else.\n")
@@ -319,7 +325,7 @@ def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=N
         out.write(f"  Protection ..... stop {outcome.stop.status} {plain(outcome.stop.orig_qty)}, take-profit "
                   f"{outcome.take_profit.status} {plain(outcome.take_profit.orig_qty)}; holding {args.hold:g} s\n")
         sleep(args.hold)
-    rt = roundtrip.close(outcome, trader, rules) if outcome.status == entry.PROTECTED else \
+    rt = roundtrip.close(outcome, trader, rules, record_exit) if outcome.status == entry.PROTECTED else \
         roundtrip.RoundTrip(outcome, problems=[f"entry was {outcome.status}"])
     if outcome.status == entry.PROTECTED:
         _ledger_close(book, rt)
@@ -493,6 +499,79 @@ def _reconcile_cmd(args: argparse.Namespace, make_trader=None, make_reader=None,
     if rec.unprotected:
         return 3
     return 0 if rec.clean else 1
+
+
+def _pending_cmd(args: argparse.Namespace, make_trader=None, make_reader=None, load_creds=None, out=None,
+                 now: float | None = None) -> int:
+    """Why each PENDING trade is not settled yet: every record reconciliation looks at, and what it would decide
+    now. Read-only: it never changes the ledger, places or cancels an order, or resumes anything.
+    Exit codes: 0 nothing pending, 1 a trade is pending, 2 setup problem or Binance could not be read."""
+    from bot.exchange.binance import ExchangeError
+    from bot.exchange.credentials import CredentialsError
+    from bot.execution import reconcile
+    from bot.execution.ledger import PENDING, Ledger, LedgerError
+
+    out = out or sys.stdout
+    now = time.time() if now is None else now
+    env = _env(args)
+    folder = Path(os.path.expanduser(args.state_dir))
+    out.write(f"Pending trades: {env} ledger ({folder}) vs the {_VENUES[env]['label']} account "
+              f"(read-only; changes nothing)\n")
+    try:
+        book = Ledger.load(folder, env)
+    except LedgerError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    pending = [t for t in book.trades.values() if t.status == PENDING]
+    if not pending:
+        out.write("No trade is PENDING.\n")
+        return 0
+    try:
+        trader, reader = _venue(env, load_config(args.config), make_trader, make_reader, load_creds)
+        tol = _tolerances(reader, set(book.baseline) | {t.base_asset for t in book.trades.values()})
+        rec = reconcile.reconcile(book, trader, tol, now)                  # never applied here
+        for t in pending:
+            age = now - t.created_at
+            out.write(f"\n{t.symbol} trade {t.intent_id[:8]} ({t.strategy or '?'}), written "
+                      f"{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(t.created_at))} UTC, {age / 60:.0f} min ago\n")
+            out.write("  Client IDs ..... " + ", ".join(f"{k} {v}" for k, v in t.ids.items()) + "\n")
+            e = trader.query(t.symbol, t.ids["entry"])
+            if e is not None:
+                out.write(f"  Entry order .... found by its client ID: order {e.order_id}, {e.status}, "
+                          f"{plain(e.executed_qty)} bought\n")
+            elif age < reconcile.SETTLE_S:
+                out.write(f"  Entry order .... not found yet; reconciliation waits {reconcile.SETTLE_S:.0f} s\n")
+            else:
+                ex = reconcile.examine(t, trader, now, book, tol)
+                out.write("  Entry order .... not found by its client ID\n")
+                for line in ex.own_orders:
+                    out.write(f"  Own order ...... {line}\n")
+                out.write(f"  Fills .......... {ex.fills} on {t.symbol} from "
+                          f"{time.strftime('%Y-%m-%d %H:%M', time.gmtime(ex.start_ms / 1000))} to "
+                          f"{time.strftime('%Y-%m-%d %H:%M', time.gmtime(ex.end_ms / 1000))} UTC\n")
+                for o in ex.orders:
+                    out.write(f"    order {o.order_id}: {o.fills} fill(s), bought {plain(o.bought)}, sold "
+                              f"{plain(o.sold)}; client ID {o.client_order_id or '?'} {o.status}; {o.owner}"
+                              + (f"; EVIDENCE: {o.evidence}" if o.evidence else "") + "\n")
+                out.write(f"  Coins .......... {plain(ex.extra)} {t.base_asset} more than the ledger expects "
+                          f"(after {plain(ex.others_net)} from orders that are not the bot's)\n")
+            decided = [u for u in rec.updates if u.intent_id == t.intent_id]
+            said = [m for m in rec.mismatches + rec.unsettled if t.ids["entry"] in m]
+            if rec.errors:
+                verdict = "nothing now: " + "; ".join(rec.errors)
+            elif decided:
+                verdict = f"{decided[-1].status} ({decided[-1].note})"
+            elif said:
+                verdict = "keep it PENDING: " + said[0]
+            else:
+                verdict = "keep it PENDING"
+            out.write(f"  Reconciliation would record: {verdict}\n")
+    except (CredentialsError, ExchangeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    out.write("\nNothing was changed. The runner records what reconciliation decides on its own rounds; never edit "
+              "the ledger by hand.\n")
+    return 1
 
 
 def _live_check(args: argparse.Namespace, make_trader=None, make_reader=None, load_creds=None, out=None) -> int:
@@ -1793,6 +1872,7 @@ def main(argv: list[str] | None = None) -> int:
     trn.add_argument("--ticks", type=int, default=None, help=argparse.SUPPRESS)
     trn.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
     tsub.add_parser("status", help="mode, equity, open trades (from the runner's files)")
+    tsub.add_parser("pending", help="why a PENDING trade is not settled yet (read-only; changes nothing)")
     for name, help_ in (("resume", "allow new entries (refused while a breaker or fault is active)"),
                         ("block", "block new entries; exits keep working")):
         q = tsub.add_parser(name, help=help_)
@@ -1817,6 +1897,7 @@ def main(argv: list[str] | None = None) -> int:
     lrn.add_argument("--ticks", type=int, default=None, help=argparse.SUPPRESS)
     lrn.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
     lsub.add_parser("status", help="mode, equity, open trades (from the runner's files)")
+    lsub.add_parser("pending", help="why a PENDING trade is not settled yet (read-only; changes nothing)")
     for name, help_ in (("resume", "allow new entries (refused while a breaker or fault is active)"),
                         ("block", "block new entries; exits keep working")):
         q = lsub.add_parser(name, help=help_)
@@ -1996,9 +2077,10 @@ def main(argv: list[str] | None = None) -> int:
                     args.symbols = []
                 return _reconcile_cmd(args)
             return {"check": _live_check, "start": _testnet_start, "run": _testnet_run, "status": _testnet_status,
+                    "pending": _pending_cmd,
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.live_cmd](args)
         if args.cmd == "testnet":
-            return {"start": _testnet_start, "run": _testnet_run, "status": _testnet_status,
+            return {"start": _testnet_start, "run": _testnet_run, "status": _testnet_status, "pending": _pending_cmd,
                     "resume": _paper_request("resume"), "block": _paper_request("block")}[args.testnet_cmd](args)
         if args.cmd == "paper":
             return {"run": _paper_run, "status": _paper_status, "resume": _paper_request("resume"),

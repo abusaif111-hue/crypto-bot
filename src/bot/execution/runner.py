@@ -5,13 +5,16 @@ Every round (default 60 seconds) it:
 1. reconciles the ledger with the testnet account (`bot.execution.reconcile`) and records what is
    certain. Coins found unprotected are sold at market at once. A mismatch or unprotected coins
    block new entries until an operator resumes; an exchange error or an order still unsettled
-   blocks entries for that round only;
+   blocks entries for that round only (a reply Binance sent that cannot be read is such an error: it
+   changes nothing and is reported once as `exchange_data_error`);
 2. marks the bot's equity (`bot.execution.account`: capped capital, P&L periods, drawdown,
    breakers) and carries out operator requests (resume, block entries);
 3. sells trades whose time stop has passed;
 4. once per finished candle of each strategy's interval: the strategy's exits for its own open
    trades, then its new ideas. Each idea is written to the ledger as PENDING, then goes to
    `bot.execution.entry.submit()`, which runs the risk engine and sends one protected order list.
+   While any trade is PENDING (an entry whose outcome is not known yet), no new entry is made at
+   all, in the same round or later ones, until reconciliation settles it.
    The candle each strategy decided on is saved first (`strategy-clock.json`), so a restart
    neither repeats nor skips a decision.
 
@@ -40,7 +43,7 @@ from bot.exchange.interface import INTERVAL_MS
 from bot.exchange.trading import BinanceTrader, LiveAuthorization, OrderStatusUnknown
 from bot.execution import entry, exit as exits, reconcile
 from bot.execution.account import QUOTE, TradingAccount, as_utc
-from bot.execution.ledger import CLOSED, NOT_OPENED, OPEN, Ledger, LedgerError, TrackedTrade
+from bot.execution.ledger import CLOSED, NOT_OPENED, OPEN, PENDING, Ledger, LedgerError, TrackedTrade
 from bot.market.data import MarketDataService, MarketDataUnavailable
 from bot.portfolio.accounting import MissingPrice
 from bot.risk.models import AccountState, Mode, TradeIntent
@@ -84,6 +87,8 @@ class TestnetRunner:
     _decided: dict[str, int] = field(default_factory=dict, init=False)
     _failed: dict[str, tuple[int, float]] = field(default_factory=dict, init=False)
     _blocked_reason: str = field(default="", init=False)
+    _data_error: str = field(default="", init=False)
+    _exit_waits: set[str] = field(default_factory=set, init=False)
     _last_status: float = field(default=0.0, init=False)
     _seen_history: int = field(default=0, init=False)
 
@@ -182,6 +187,13 @@ class TestnetRunner:
             self.account.modes.report_fault("UNPROTECTED_POSITION", rec.unprotected[0])
             for iid in rec.unprotected_ids:
                 self._close(self.ledger.trades[iid], now, "unprotected coins sold at market")
+        unreadable = "; ".join(rec.unreadable)
+        if unreadable != self._data_error:               # once per change: the alert says it, the pause holds
+            if unreadable:
+                self.log("exchange_data_error", reason=unreadable,
+                         note="Binance sent a reply the bot cannot read: nothing was changed, new entries are "
+                              "paused, and reconciliation tries again every round")
+            self._data_error = unreadable
         reason = "; ".join(rec.errors + rec.unsettled)
         if reason != self._blocked_reason:
             if reason:
@@ -250,7 +262,17 @@ class TestnetRunner:
         except MarketDataUnavailable as e:
             self.log("exit_failed", symbol=t.symbol, trade=t.intent_id[:8], why=why, reason=str(e))
             return
-        r = exits.close_trade(t, self.trader, rules)
+        held_elsewhere = self.ledger.expected_holdings().get(t.base_asset, ZERO) - t.received_qty
+        r = exits.close_trade(t, self.trader, rules, now, lambda k: self._record_exit_attempt(t.intent_id, k, now),
+                              held_elsewhere)
+        if r.waiting:                                     # a sale's outcome is not known yet: nothing was sent
+            key = f"{t.intent_id}:{r.attempt}"
+            if key not in self._exit_waits:
+                self._exit_waits.add(key)
+                self.log("exit_waiting", symbol=t.symbol, trade=t.intent_id[:8], why=why, attempt=r.attempt,
+                         reason=r.problem, note="no sale is sent until its outcome is known; entries are blocked")
+            self.account.modes.report_fault("UNPROTECTED_POSITION", f"{t.symbol}: {r.problem}")
+            return
         if not r.closed:
             self.log("exit_failed", symbol=t.symbol, trade=t.intent_id[:8], why=why, reason=r.problem,
                      note="ACT NOW if this repeats: the coins may be unprotected; check bot reconcile")
@@ -261,6 +283,12 @@ class TestnetRunner:
         self.log("trade_closed", symbol=t.symbol, trade=t.intent_id[:8], why=why, strategy=t.strategy,
                  qty=t.received_qty, entry=t.entry_price,
                  sold_at=(r.sale.quote_qty / r.sale.executed_qty) if r.sale and r.sale.executed_qty else None)
+
+    def _record_exit_attempt(self, intent_id: str, attempt: int, now: float) -> None:
+        """A sale is about to be sent: record it first (PR-2), so it is never sent twice."""
+        t = self.ledger.note_exit_attempt(intent_id, attempt, now)
+        self.ledger.save()
+        self.log("exit_attempt", symbol=t.symbol, trade=intent_id[:8], attempt=attempt, client_id=t.exit_ids()[attempt])
 
     def _run_strategy(self, strategy: Strategy, now: float, entries_ok: bool) -> None:
         name = getattr(strategy, "name", "?")
@@ -298,6 +326,13 @@ class TestnetRunner:
             self._enter(intent, now, entries_ok)
 
     def _enter(self, intent: TradeIntent, now: float, entries_ok: bool) -> None:
+        pending = [t for t in self.ledger.trades.values() if t.status == PENDING]
+        if pending:                         # an earlier entry's outcome is not known: never a second one meanwhile
+            self.log("entry_blocked", symbol=intent.symbol, strategy=intent.strategy,
+                     mode=self.account.modes.mode.value, pending=[t.intent_id[:8] for t in pending],
+                     reason=f"an earlier entry's outcome is not known yet ({', '.join(t.symbol for t in pending)}); "
+                            f"entries stay blocked until reconciliation settles it")
+            return
         state = self._state(now, entries_ok)
         if state is not None and state.mode is not Mode.RUNNING:
             self.log("entry_blocked", symbol=intent.symbol, strategy=intent.strategy, mode=state.mode.value,
@@ -321,7 +356,8 @@ class TestnetRunner:
         self.ledger.save()                                  # written before anything is sent
         try:
             out = entry.submit(intent, state, snap, rules, self.cfg, self.trader, iid,
-                               self.corr_groups.get(intent.symbol, "majors"))
+                               self.corr_groups.get(intent.symbol, "majors"),
+                               record_exit=lambda k: self._record_exit_attempt(iid.hex, k, now))
         except (OrderStatusUnknown, ExchangeError) as e:
             self.log("entry_unknown", symbol=intent.symbol, trade=iid.hex[:8], reason=str(e),
                      note="the trade stays PENDING; reconciliation settles it and blocks entries meanwhile")

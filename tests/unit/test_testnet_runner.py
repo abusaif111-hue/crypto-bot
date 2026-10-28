@@ -69,6 +69,11 @@ class FakeBinance:
             raise ExchangeError("testnet down")
         return self.orders.get(cid)
 
+    def query_by_id(self, symbol, order_id):
+        if self.fail_reads:
+            raise ExchangeError("testnet down")
+        return next((o for o in self.orders.values() if o.order_id == order_id), None)
+
     def cancel_list(self, symbol, list_cid):
         self.sent.append(("cancel", list_cid))
         hit = False
@@ -110,6 +115,11 @@ class FakeBinance:
 
     def my_trades(self, symbol, order_id):
         return []
+
+    def trades_between(self, symbol, start_ms, end_ms):
+        if self.fail_reads:
+            raise ExchangeError("testnet down")
+        return [r for r in getattr(self, "history", []) if start_ms <= r.time_ms <= end_ms]
 
 
 class Idea:
@@ -244,9 +254,16 @@ def opened(w, qty="0.0012"):
     return t
 
 
+def close(w, t):
+    """close_trade as the runner calls it: each sale attempt recorded in the ledger before it is sent."""
+    held = w.runner.ledger.expected_holdings().get(t.base_asset, Dec(0)) - t.received_qty
+    return exits.close_trade(t, w.ex, RULES, w.clock(), lambda k: w.runner._record_exit_attempt(t.intent_id, k,
+                                                                                                 w.clock()), held)
+
+
 def test_closing_cancels_the_protection_then_sells_what_is_left(world):
     t = opened(world)
-    r = exits.close_trade(t, world.ex, RULES)
+    r = close(world, t)
     assert r.closed and r.left_qty == 0 and r.sale.executed_qty == Dec("0.0012")
     assert [k for k, _ in world.ex.sent] == ["cancel", "sell"]
 
@@ -254,32 +271,36 @@ def test_closing_cancels_the_protection_then_sells_what_is_left(world):
 def test_coins_a_protective_order_sold_are_not_sold_again(world):
     t = opened(world)
     world.ex.fill_stop(t.ids["stop"], "78000")
-    r = exits.close_trade(t, world.ex, RULES)
+    r = close(world, t)
     assert r.closed and r.sale is None and r.sold_by_protection == Dec("0.0012")
     assert ("sell", t.ids["exit"]) not in world.ex.sent
 
 
-def test_a_sale_sent_before_is_looked_up_never_sent_twice(world):
+def test_a_sale_sent_before_is_looked_up_and_its_id_never_reused(world):
     t = opened(world)
     world.ex._put(t.ids["exit"], type="MARKET", status="FILLED", orig_qty=Dec("0.0012"),
                   executed_qty=Dec("0.0012"))
-    assert exits.close_trade(t, world.ex, RULES).closed
-    world.ex.orders[t.ids["exit"]] = OrderState(**{**world.ex.orders[t.ids["exit"]].__dict__, "status": "EXPIRED"})
-    r = exits.close_trade(t, world.ex, RULES)
-    assert not r.closed and "never sent twice" in r.problem
+    assert close(world, t).closed
     assert ("sell", t.ids["exit"]) not in world.ex.sent
+    # The same sale ended EXPIRED with nothing sold (audit M1): the coins are sold by the next attempt, under the
+    # next ID; the first ID is never sent again.
+    world.ex.orders[t.ids["exit"]] = OrderState(**{**world.ex.orders[t.ids["exit"]].__dict__, "status": "EXPIRED",
+                                                   "executed_qty": Dec(0)})
+    r = close(world, t)
+    assert r.closed and r.attempt == 1
+    assert ("sell", t.ids["exit-1"]) in world.ex.sent and ("sell", t.ids["exit"]) not in world.ex.sent
 
 
 def test_a_failed_sale_is_reported_not_closed(world):
     t = opened(world)
     world.ex.sale_error = OrderRejected("Binance refused the order: MIN_NOTIONAL")
-    r = exits.close_trade(t, world.ex, RULES)
+    r = close(world, t)
     assert not r.closed and "failed" in r.problem
 
 
 def test_less_than_the_minimum_is_left_as_dust(world):
     t = opened(world, qty="0.000005")
-    r = exits.close_trade(t, world.ex, RULES)
+    r = close(world, t)
     assert r.closed and r.left_qty == Dec("0.000005") and r.sale is None
 
 
@@ -499,5 +520,217 @@ def test_the_risk_engine_sees_open_trades_and_never_adds_to_one(world):
 def test_nothing_is_sold_while_a_protective_order_is_still_open(world):
     t = opened(world)
     world.ex.cancel_list = lambda symbol, list_cid: True          # Binance says yes, nothing changes
-    r = exits.close_trade(t, world.ex, RULES)
+    r = close(world, t)
     assert not r.closed and "still open" in r.problem and not world.ex.sent
+
+
+# ---------------------------------------------------------------- PR-1: an unknown entry blocks every later entry
+def eth_intent():
+    return TradeIntent("ETHUSDT", "BUY", Dec("2502.5"), Dec("2400"), Dec("2810"), "H2b", 720, "2 of 3 returns negative")
+
+
+def unknown_entries(w):
+    """Every order list's outcome is unknown (no answer, still not found after the trader's own lookups)."""
+    from bot.exchange.trading import OrderStatusUnknown
+    calls = []
+
+    def unknown(req, rules, fee_rate=Dec("0.001")):
+        calls.append(req.symbol)
+        w.ex.sent.append(("opoco", req.symbol))
+        raise OrderStatusUnknown(req.symbol, req.entry_client_id, "NetworkError: read timed out")
+    w.ex.place_protected_entry = unknown
+    return calls
+
+
+def test_an_unknown_entry_blocks_every_later_idea_in_the_same_round(world):
+    resume(world)
+    next_candle(world)
+    calls = unknown_entries(world)
+    world.s.ideas = [intent(), eth_intent()]
+    world.runner.tick()
+    assert calls == ["BTCUSDT"]                                           # the ETH idea was never sent
+    assert [t.status for t in world.runner.ledger.trades.values()] == [PENDING]
+    assert events(world.dir, "entry_unknown")[0]["symbol"] == "BTCUSDT"
+    (b,) = [e for e in events(world.dir, "entry_blocked") if e["symbol"] == "ETHUSDT"]
+    assert "outcome is not known" in b["reason"] and b["pending"]
+
+
+def test_a_failed_cancel_inside_the_entry_blocks_the_same_way(world):
+    resume(world)
+    next_candle(world)
+
+    def stuck(req, rules, fee_rate=Dec("0.001")):
+        world.ex.sent.append(("opoco", req.symbol))
+        return world.ex._put(req.entry_client_id, side="BUY", status="NEW", orig_qty=req.qty)   # neither filled nor ended
+
+    def no_answer(symbol, list_cid):
+        raise ExchangeError(f"cancel order list {list_cid}: no answer")
+    world.ex.place_protected_entry, world.ex.cancel_list = stuck, no_answer
+    world.s.ideas = [intent(), eth_intent()]
+    world.runner.tick()
+    assert world.ex.sent == [("opoco", "BTCUSDT")]
+    assert [t.status for t in world.runner.ledger.trades.values()] == [PENDING]
+    assert any(e["symbol"] == "ETHUSDT" for e in events(world.dir, "entry_blocked"))
+
+
+def test_the_block_lasts_until_reconciliation_settles_the_trade(world):
+    resume(world)
+    next_candle(world)
+    unknown_entries(world)
+    world.s.ideas = [intent()]
+    world.runner.tick()
+    (t,) = world.runner.ledger.trades.values()
+    world.ex.place_protected_entry = FakeBinance.place_protected_entry.__get__(world.ex)   # Binance answers again
+    next_candle(world)                                         # 4 hours later: not found, and nothing else either
+    world.s.ideas = [eth_intent()]
+    world.runner.tick()
+    assert world.runner.ledger.trades[t.intent_id].status == NOT_OPENED
+    assert "never placed" in world.runner.ledger.trades[t.intent_id].note
+    assert ("opoco", "ETHUSDT") in world.ex.sent                # settled first, so the next idea may go
+
+
+def test_still_pending_while_young_and_uncertain_while_any_record_disagrees(world):
+    from bot.exchange.trading import TradeRecord
+    resume(world)
+    next_candle(world)
+    unknown_entries(world)
+    world.s.ideas = [intent()]
+    world.runner.tick()
+    (t,) = world.runner.ledger.trades.values()
+    world.clock.advance(60)                                    # young: unsettled, the next idea is blocked
+    world.runner.tick()
+    assert world.runner.ledger.trades[t.intent_id].status == PENDING and events(world.dir, "entries_paused")
+    world.ex.history = [TradeRecord(7, True, Dec("0.0012"), int((t.created_at + 1) * 1000))]   # a buy did happen
+    next_candle(world)
+    world.s.ideas = [eth_intent()]
+    world.runner.tick()
+    assert world.runner.ledger.trades[t.intent_id].status == PENDING
+    assert "uncertain" in events(world.dir, "reconciliation_mismatch")[-1]["detail"]
+    assert "RECONCILIATION_MISMATCH" in world.runner.account.modes.active_breaches
+    assert ("opoco", "ETHUSDT") not in world.ex.sent
+
+
+def test_an_entry_found_filled_later_becomes_an_open_trade_the_engine_counts(world):
+    resume(world)
+    next_candle(world)
+    unknown_entries(world)
+    world.s.ideas = [intent()]
+    world.runner.tick()
+    (t,) = world.runner.ledger.trades.values()
+    world.ex.bal["USDT"] -= Dec("0.0012") * Dec("80000")       # Binance did execute it, protection and all
+    world.ex.bal["BTC"] += Dec("0.0012")
+    world.ex._put(t.ids["entry"], side="BUY", type="LIMIT", status="FILLED", orig_qty=Dec("0.0012"),
+                  executed_qty=Dec("0.0012"), quote_qty=Dec("96"))
+    world.ex._put(t.ids["stop"], type="STOP_LOSS", orig_qty=Dec("0.0012"), stop_price=Dec("78000"))
+    world.ex._put(t.ids["take-profit"], type="LIMIT_MAKER", orig_qty=Dec("0.0012"), price=Dec("86240"))
+    world.clock.advance(60)
+    world.runner.tick()
+    assert world.runner.ledger.trades[t.intent_id].status == OPEN
+    (p,) = world.runner._state(world.clock(), True).positions
+    assert p.symbol == "BTCUSDT" and p.qty == Dec("0.0012")
+
+
+def test_the_block_survives_a_restart(world):
+    resume(world)
+    next_candle(world)
+    unknown_entries(world)
+    world.s.ideas = [intent()]
+    world.runner.tick()
+    world.runner.account.save()
+    again = TestnetRunner(world.dir, world.cfg, world.ex, world.runner.exchange, world.runner.signals, [world.s],
+                          {"BTCUSDT": "majors", "ETHUSDT": "majors"}, Ledger.load(world.dir, "testnet"),
+                          TradingAccount.load(world.dir, world.cfg, world.clock()), clock=world.clock)
+    assert [t.status for t in again.ledger.trades.values()] == [PENDING]
+    request(world.dir, "resume", reason="operator resumes after the restart")
+    world.clock.advance(60)
+    again.tick()
+    assert again.account.modes.mode is Mode.RUNNING              # the operator resumed ...
+    sent = list(world.ex.sent)
+    again._enter(eth_intent(), world.clock(), entries_ok=True)   # even with reconciliation clean, the gate holds
+    assert world.ex.sent == sent
+    assert events(world.dir, "entry_blocked")[-1]["symbol"] == "ETHUSDT"
+    assert "outcome is not known" in events(world.dir, "entry_blocked")[-1]["reason"]
+
+
+def test_the_pending_check_comes_before_a_new_trade_is_written():
+    import inspect
+    src = inspect.getsource(TestnetRunner._enter)
+    gate, write = src.index("t.status == PENDING"), src.index("add_pending(")
+    assert gate < write and "return" in src[gate:write]
+
+
+# ---------------------------------------------------------------- PR-1b: unreadable replies, fills that are not the bot's
+def test_the_runner_survives_an_unreadable_reply_and_recovers(world):
+    from bot.exchange.trading import MalformedResponse
+    from bot.execution.ledger import LEDGER
+    resume(world)
+    good = world.ex.open_orders
+
+    def garbled(symbol=None):
+        raise MalformedResponse("openOrders: Binance's reply is not a list")
+    world.ex.open_orders = garbled
+    before = (world.dir / LEDGER).read_bytes()
+    for _ in range(3):                                                   # three rounds: no crash
+        world.clock.advance(60)
+        world.runner.tick()
+    assert (world.dir / LEDGER).read_bytes() == before
+    assert len(events(world.dir, "exchange_data_error")) == 1           # said once, not every round
+    assert events(world.dir, "entries_paused")
+    world.ex.open_orders = good
+    world.clock.advance(60)
+    world.runner.tick()
+    assert events(world.dir, "entries_unpaused") and world.runner.account.modes.mode is Mode.RUNNING
+
+
+def test_a_restart_settles_a_trade_whose_only_fill_was_a_manual_buy(world):
+    from bot.exchange.trading import TradeRecord
+    from bot.execution import reconcile as rc
+    resume(world)
+    next_candle(world)
+    unknown_entries(world)
+    world.s.ideas = [intent()]
+    world.runner.tick()
+    (t,) = world.runner.ledger.trades.values()
+    world.ex._put("web_manual", side="BUY", type="MARKET", status="FILLED", orig_qty=Dec("0.001"),
+                  executed_qty=Dec("0.001"), order_id=900)
+    world.ex.bal["BTC"] += Dec("0.001")
+    world.ex.history = [TradeRecord(900, True, Dec("0.001"), int((t.created_at + 5) * 1000), Dec(0), "USDT")]
+    world.runner.account.save()
+    world.clock.advance(rc.SETTLE_S + 60)
+    again = TestnetRunner(world.dir, world.cfg, world.ex, world.runner.exchange, world.runner.signals, [world.s],
+                          {"BTCUSDT": "majors", "ETHUSDT": "majors"}, Ledger.load(world.dir, "testnet"),
+                          TradingAccount.load(world.dir, world.cfg, world.clock()), clock=world.clock)
+    again.tick()
+    assert again.ledger.trades[t.intent_id].status == NOT_OPENED          # settled: the fill was not the bot's
+    assert Ledger.load(world.dir, "testnet").trades[t.intent_id].status == NOT_OPENED
+    assert any("BTC: Binance holds" in e["detail"] for e in events(world.dir, "reconciliation_mismatch"))
+
+
+# ---------------------------------------------------------------- PR-2: a sale is recorded first and never repeated
+def test_a_sale_in_flight_survives_a_restart_and_is_never_sent_early(world):
+    from bot.exchange.trading import OrderStatusUnknown
+    from bot.execution.ledger import EXIT_SETTLE_S
+    resume(world)
+    next_candle(world)
+    world.s.ideas = [intent(hours=1)]
+    world.runner.tick()
+    (t,) = world.runner.ledger.trades.values()
+    world.ex.sale_error = OrderStatusUnknown("BTCUSDT", t.ids["exit"], "read timed out")
+    world.clock.advance(3601)
+    world.runner.tick()                                            # time stop: attempt 0 recorded, outcome unknown
+    assert t.exit_attempts == 1 and world.ex.sent.count(("sell", t.ids["exit"])) == 1
+    world.runner.account.save()
+    again = TestnetRunner(world.dir, world.cfg, world.ex, world.runner.exchange, world.runner.signals, [world.s],
+                          {"BTCUSDT": "majors", "ETHUSDT": "majors"}, Ledger.load(world.dir, "testnet"),
+                          TradingAccount.load(world.dir, world.cfg, world.clock()), clock=world.clock)
+    assert again.ledger.trades[t.intent_id].exit_attempts == 1      # the attempt survived the restart
+    world.ex.sale_error = None
+    for _ in range(2):                                             # young: nothing is sent, said once
+        world.clock.advance(60)
+        again.tick()
+    assert [s for s in world.ex.sent if s[0] == "sell"] == [("sell", t.ids["exit"])]
+    assert len(events(world.dir, "exit_waiting")) == 1
+    world.clock.advance(EXIT_SETTLE_S)                             # not found, and the coins are still there
+    again.tick()
+    assert [s for s in world.ex.sent if s[0] == "sell"] == [("sell", t.ids["exit"]), ("sell", t.ids["exit-1"])]
+    assert again.ledger.trades[t.intent_id].status == CLOSED

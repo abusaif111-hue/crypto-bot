@@ -16,6 +16,7 @@ import uuid
 _BINANCE_ID = re.compile(r"^[.A-Z:/a-z0-9_-]{1,36}$")
 
 _KIND_PREFIX = {"entry": "e", "protect": "p", "exit": "x", "list": "l"}
+_BOT_ID = re.compile(r"^sb[epxl][0-9][0-9a-f]{32}$")
 
 
 def new_intent_id() -> uuid.UUID:
@@ -35,3 +36,8 @@ def client_order_id(intent_id: uuid.UUID, kind: str, leg: int = 0) -> str:
 
 def is_valid_client_id(cid: str) -> bool:
     return bool(_BINANCE_ID.match(cid))
+
+
+def is_bot_client_id(cid: str) -> bool:
+    """True if the ID has the shape of one made by `client_order_id` (whatever ledger it belongs to)."""
+    return bool(_BOT_ID.match(cid))
