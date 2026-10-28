@@ -254,9 +254,16 @@ def opened(w, qty="0.0012"):
     return t
 
 
+def close(w, t):
+    """close_trade as the runner calls it: each sale attempt recorded in the ledger before it is sent."""
+    held = w.runner.ledger.expected_holdings().get(t.base_asset, Dec(0)) - t.received_qty
+    return exits.close_trade(t, w.ex, RULES, w.clock(), lambda k: w.runner._record_exit_attempt(t.intent_id, k,
+                                                                                                 w.clock()), held)
+
+
 def test_closing_cancels_the_protection_then_sells_what_is_left(world):
     t = opened(world)
-    r = exits.close_trade(t, world.ex, RULES)
+    r = close(world, t)
     assert r.closed and r.left_qty == 0 and r.sale.executed_qty == Dec("0.0012")
     assert [k for k, _ in world.ex.sent] == ["cancel", "sell"]
 
@@ -264,32 +271,36 @@ def test_closing_cancels_the_protection_then_sells_what_is_left(world):
 def test_coins_a_protective_order_sold_are_not_sold_again(world):
     t = opened(world)
     world.ex.fill_stop(t.ids["stop"], "78000")
-    r = exits.close_trade(t, world.ex, RULES)
+    r = close(world, t)
     assert r.closed and r.sale is None and r.sold_by_protection == Dec("0.0012")
     assert ("sell", t.ids["exit"]) not in world.ex.sent
 
 
-def test_a_sale_sent_before_is_looked_up_never_sent_twice(world):
+def test_a_sale_sent_before_is_looked_up_and_its_id_never_reused(world):
     t = opened(world)
     world.ex._put(t.ids["exit"], type="MARKET", status="FILLED", orig_qty=Dec("0.0012"),
                   executed_qty=Dec("0.0012"))
-    assert exits.close_trade(t, world.ex, RULES).closed
-    world.ex.orders[t.ids["exit"]] = OrderState(**{**world.ex.orders[t.ids["exit"]].__dict__, "status": "EXPIRED"})
-    r = exits.close_trade(t, world.ex, RULES)
-    assert not r.closed and "never sent twice" in r.problem
+    assert close(world, t).closed
     assert ("sell", t.ids["exit"]) not in world.ex.sent
+    # The same sale ended EXPIRED with nothing sold (audit M1): the coins are sold by the next attempt, under the
+    # next ID; the first ID is never sent again.
+    world.ex.orders[t.ids["exit"]] = OrderState(**{**world.ex.orders[t.ids["exit"]].__dict__, "status": "EXPIRED",
+                                                   "executed_qty": Dec(0)})
+    r = close(world, t)
+    assert r.closed and r.attempt == 1
+    assert ("sell", t.ids["exit-1"]) in world.ex.sent and ("sell", t.ids["exit"]) not in world.ex.sent
 
 
 def test_a_failed_sale_is_reported_not_closed(world):
     t = opened(world)
     world.ex.sale_error = OrderRejected("Binance refused the order: MIN_NOTIONAL")
-    r = exits.close_trade(t, world.ex, RULES)
+    r = close(world, t)
     assert not r.closed and "failed" in r.problem
 
 
 def test_less_than_the_minimum_is_left_as_dust(world):
     t = opened(world, qty="0.000005")
-    r = exits.close_trade(t, world.ex, RULES)
+    r = close(world, t)
     assert r.closed and r.left_qty == Dec("0.000005") and r.sale is None
 
 
@@ -509,7 +520,7 @@ def test_the_risk_engine_sees_open_trades_and_never_adds_to_one(world):
 def test_nothing_is_sold_while_a_protective_order_is_still_open(world):
     t = opened(world)
     world.ex.cancel_list = lambda symbol, list_cid: True          # Binance says yes, nothing changes
-    r = exits.close_trade(t, world.ex, RULES)
+    r = close(world, t)
     assert not r.closed and "still open" in r.problem and not world.ex.sent
 
 
@@ -693,3 +704,33 @@ def test_a_restart_settles_a_trade_whose_only_fill_was_a_manual_buy(world):
     assert again.ledger.trades[t.intent_id].status == NOT_OPENED          # settled: the fill was not the bot's
     assert Ledger.load(world.dir, "testnet").trades[t.intent_id].status == NOT_OPENED
     assert any("BTC: Binance holds" in e["detail"] for e in events(world.dir, "reconciliation_mismatch"))
+
+
+# ---------------------------------------------------------------- PR-2: a sale is recorded first and never repeated
+def test_a_sale_in_flight_survives_a_restart_and_is_never_sent_early(world):
+    from bot.exchange.trading import OrderStatusUnknown
+    from bot.execution.ledger import EXIT_SETTLE_S
+    resume(world)
+    next_candle(world)
+    world.s.ideas = [intent(hours=1)]
+    world.runner.tick()
+    (t,) = world.runner.ledger.trades.values()
+    world.ex.sale_error = OrderStatusUnknown("BTCUSDT", t.ids["exit"], "read timed out")
+    world.clock.advance(3601)
+    world.runner.tick()                                            # time stop: attempt 0 recorded, outcome unknown
+    assert t.exit_attempts == 1 and world.ex.sent.count(("sell", t.ids["exit"])) == 1
+    world.runner.account.save()
+    again = TestnetRunner(world.dir, world.cfg, world.ex, world.runner.exchange, world.runner.signals, [world.s],
+                          {"BTCUSDT": "majors", "ETHUSDT": "majors"}, Ledger.load(world.dir, "testnet"),
+                          TradingAccount.load(world.dir, world.cfg, world.clock()), clock=world.clock)
+    assert again.ledger.trades[t.intent_id].exit_attempts == 1      # the attempt survived the restart
+    world.ex.sale_error = None
+    for _ in range(2):                                             # young: nothing is sent, said once
+        world.clock.advance(60)
+        again.tick()
+    assert [s for s in world.ex.sent if s[0] == "sell"] == [("sell", t.ids["exit"])]
+    assert len(events(world.dir, "exit_waiting")) == 1
+    world.clock.advance(EXIT_SETTLE_S)                             # not found, and the coins are still there
+    again.tick()
+    assert [s for s in world.ex.sent if s[0] == "sell"] == [("sell", t.ids["exit"]), ("sell", t.ids["exit-1"])]
+    assert again.ledger.trades[t.intent_id].status == CLOSED

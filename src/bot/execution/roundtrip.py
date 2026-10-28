@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from bot.core.ids import client_order_id
 from bot.core.money import ZERO, floor_to_step
@@ -38,8 +38,10 @@ class RoundTrip:
     problems: list[str] = field(default_factory=list)
 
 
-def close(outcome: EntryOutcome, trader: BinanceTrader, rules: SymbolRules) -> RoundTrip:
-    """Cancel the protection, sell what is left at market, and check that nothing stays open."""
+def close(outcome: EntryOutcome, trader: BinanceTrader, rules: SymbolRules,
+          record_exit: Callable[[int], None] | None = None) -> RoundTrip:
+    """Cancel the protection, sell what is left at market, and check that nothing stays open. `record_exit(0)`
+    records the sale in the ledger before it is sent (PR-2)."""
     rt = RoundTrip(outcome)
     plan = outcome.plan
     if outcome.status != PROTECTED:
@@ -57,6 +59,13 @@ def close(outcome: EntryOutcome, trader: BinanceTrader, rules: SymbolRules) -> R
     left = floor_to_step(outcome.received_qty - sold, rules.market_step_size or rules.step_size)
     if left > 0:
         intent_id = uuid.UUID(hex=plan.entry_client_id[-32:])
+        try:
+            if record_exit is not None:
+                record_exit(0)                              # written before it is sent
+        except Exception as e:
+            rt.problems.append(f"the closing sale could not be recorded ({e}), so it was not sent; sell {left} "
+                               f"{plan.symbol} by hand")
+            return rt
         try:
             rt.close = trader.place(OrderRequest(plan.symbol, "SELL", "MARKET", left,
                                                  client_order_id(intent_id, "exit")), rules)

@@ -45,7 +45,7 @@ from bot.core.ids import is_bot_client_id
 from bot.core.money import ZERO, plain
 from bot.exchange.binance import ExchangeError
 from bot.exchange.trading import TRADES_PAGE, AccountInfo, MalformedResponse, OrderState, TradeFill, TradeRecord
-from bot.execution.ledger import CLOSED, NOT_OPENED, OPEN, PENDING, Ledger, TrackedTrade
+from bot.execution.ledger import EXIT_SETTLE_S, CLOSED, NOT_OPENED, OPEN, PENDING, Ledger, TrackedTrade
 
 SETTLE_S = 300.0
 ENDED = ("CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED")
@@ -134,7 +134,7 @@ def _check(ledger: Ledger, trader: ReadOnlyTrader, tolerance: dict[str, Decimal]
         else:
             received = t.received_qty
         if received is not None:
-            if _check_open(t, received, trader, tolerance.get(t.base_asset, ZERO), rec):
+            if _check_open(t, received, trader, tolerance.get(t.base_asset, ZERO), rec, now):
                 held[t.base_asset] = held.get(t.base_asset, ZERO) + received
 
     known = {cid: t for t in ledger.active() for cid in t.ids.values()}
@@ -338,7 +338,7 @@ def _identify(t: TrackedTrade, trader: ReadOnlyTrader, oid: int, fs: list[TradeR
 
 
 def _check_open(t: TrackedTrade, received: Decimal, trader: ReadOnlyTrader, step: Decimal,
-                rec: Reconciliation) -> bool:
+                rec: Reconciliation, now: float) -> bool:
     """True if the trade is still open and fully protected; records what is wrong otherwise."""
     name = f"{t.symbol} trade {t.intent_id[:8]} ({plain(received)} {t.base_asset})"
     stop = trader.query(t.symbol, t.ids["stop"])
@@ -371,11 +371,26 @@ def _check_open(t: TrackedTrade, received: Decimal, trader: ReadOnlyTrader, step
                 rec.updates[i] = replace(u, prices={**(u.prices or {}), "stop_price": stop.stop_price or ZERO,
                                                     "take_profit_price": tp.price})
         return True
-    exit_ = trader.query(t.symbol, t.ids["exit"])
-    if exit_ is not None and exit_.status == "FILLED":
-        legs = sum((o.executed_qty for o in (stop, tp) if o is not None), ZERO)
-        _closed(rec, t, received - legs - exit_.executed_qty, "closed by the bot's market sale")
+    # The bot's own sales (PR-2): every attempt has its own ID; what they sold together counts.
+    sales = [trader.query(t.symbol, cid) for cid in t.exit_ids()]
+    found = [k for k, o in enumerate(sales) if o is not None]
+    legs = sum((o.executed_qty for o in (stop, tp) if o is not None), ZERO)
+    sold = sum((o.executed_qty for o in sales if o is not None), ZERO)
+    still = next((o for o in sales if o is not None and not o.final), None)
+    if still is not None:
+        rec.unsettled.append(f"{name}: its closing sale {still.client_order_id} is still {still.status}")
+        return True
+    if legs + sold > received + step:
+        rec.mismatches.append(f"{name}: its sales and protective orders sold {plain(legs + sold)}, more than the "
+                              f"{plain(received)} it held")
+    made = max(t.exit_attempts, found[-1] + 1 if found else 0)
+    if found and found[-1] == made - 1 and sales[found[-1]].status == "FILLED":
+        _closed(rec, t, received - legs - sold, "closed by the bot's market sale")
         return False
+    if made and sales[made - 1] is None and now - t.exit_sent_at < EXIT_SETTLE_S:
+        rec.unsettled.append(f"{name}: its closing sale {t.exit_ids()[made - 1]} cannot be found yet; waiting "
+                             f"{EXIT_SETTLE_S:.0f} s before deciding")
+        return True
     states = " / ".join(o.status if o else "missing" for o in (stop, tp))
     rec.unprotected.append(f"{name}: no confirmed protection (stop / take-profit {states}) and no filled "
                            f"closing sale; sell the coins or restore the protection")

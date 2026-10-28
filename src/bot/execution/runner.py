@@ -88,6 +88,7 @@ class TestnetRunner:
     _failed: dict[str, tuple[int, float]] = field(default_factory=dict, init=False)
     _blocked_reason: str = field(default="", init=False)
     _data_error: str = field(default="", init=False)
+    _exit_waits: set[str] = field(default_factory=set, init=False)
     _last_status: float = field(default=0.0, init=False)
     _seen_history: int = field(default=0, init=False)
 
@@ -261,7 +262,17 @@ class TestnetRunner:
         except MarketDataUnavailable as e:
             self.log("exit_failed", symbol=t.symbol, trade=t.intent_id[:8], why=why, reason=str(e))
             return
-        r = exits.close_trade(t, self.trader, rules)
+        held_elsewhere = self.ledger.expected_holdings().get(t.base_asset, ZERO) - t.received_qty
+        r = exits.close_trade(t, self.trader, rules, now, lambda k: self._record_exit_attempt(t.intent_id, k, now),
+                              held_elsewhere)
+        if r.waiting:                                     # a sale's outcome is not known yet: nothing was sent
+            key = f"{t.intent_id}:{r.attempt}"
+            if key not in self._exit_waits:
+                self._exit_waits.add(key)
+                self.log("exit_waiting", symbol=t.symbol, trade=t.intent_id[:8], why=why, attempt=r.attempt,
+                         reason=r.problem, note="no sale is sent until its outcome is known; entries are blocked")
+            self.account.modes.report_fault("UNPROTECTED_POSITION", f"{t.symbol}: {r.problem}")
+            return
         if not r.closed:
             self.log("exit_failed", symbol=t.symbol, trade=t.intent_id[:8], why=why, reason=r.problem,
                      note="ACT NOW if this repeats: the coins may be unprotected; check bot reconcile")
@@ -272,6 +283,12 @@ class TestnetRunner:
         self.log("trade_closed", symbol=t.symbol, trade=t.intent_id[:8], why=why, strategy=t.strategy,
                  qty=t.received_qty, entry=t.entry_price,
                  sold_at=(r.sale.quote_qty / r.sale.executed_qty) if r.sale and r.sale.executed_qty else None)
+
+    def _record_exit_attempt(self, intent_id: str, attempt: int, now: float) -> None:
+        """A sale is about to be sent: record it first (PR-2), so it is never sent twice."""
+        t = self.ledger.note_exit_attempt(intent_id, attempt, now)
+        self.ledger.save()
+        self.log("exit_attempt", symbol=t.symbol, trade=intent_id[:8], attempt=attempt, client_id=t.exit_ids()[attempt])
 
     def _run_strategy(self, strategy: Strategy, now: float, entries_ok: bool) -> None:
         name = getattr(strategy, "name", "?")
@@ -339,7 +356,8 @@ class TestnetRunner:
         self.ledger.save()                                  # written before anything is sent
         try:
             out = entry.submit(intent, state, snap, rules, self.cfg, self.trader, iid,
-                               self.corr_groups.get(intent.symbol, "majors"))
+                               self.corr_groups.get(intent.symbol, "majors"),
+                               record_exit=lambda k: self._record_exit_attempt(iid.hex, k, now))
         except (OrderStatusUnknown, ExchangeError) as e:
             self.log("entry_unknown", symbol=intent.symbol, trade=iid.hex[:8], reason=str(e),
                      note="the trade stays PENDING; reconciliation settles it and blocks entries meanwhile")

@@ -141,7 +141,7 @@ bot paper status
    PR-1 (audit finding H1): while any trade is PENDING the runner refuses every new entry (same round, later
    rounds, after restarts). A PENDING entry not found after `SETTLE_S` is NOT_OPENED only if no protective or
    closing order, no buy fill since it was written (`trades_between`, same myTrades endpoint) and no extra coins
-   exist; otherwise it stays PENDING as an uncertain mismatch. Fixes for H2/H3 (exits) are not approved yet.
+   exist; otherwise it stays PENDING as an uncertain mismatch. H2 is fixed by PR-2 (below); H3 is not approved yet.
    PR-1b: each fill in that window is traced to its order by Binance's order ID (`query_by_id`, the same GET
    /api/v3/order). This trade's own entry (client ID, coin, BUY, finished, something bought) settles it from that
    order; another trade in the ledger is not evidence; an ID the bot never makes is not evidence and its coins are
@@ -150,6 +150,12 @@ bot paper status
    `MalformedResponse` (an `ExchangeError`): nothing is applied, entries pause, `exchange_data_error` is alerted
    once, and the runner keeps going; an unreadable reply to a sent order is looked up, never re-sent.
    `bot live pending` / `bot testnet pending`: read-only view of every record behind a PENDING trade.
+   PR-2 (audit H2, M1): every sale of a trade's coins (closing, time stop, emergency) is written to the ledger
+   (`note_exit_attempt`, version 2; version 1 still loads) BEFORE it is sent; attempt k has its own client ID
+   (exit leg k) and no ID is ever sent twice. A new attempt only when every earlier one is known: finished with
+   coins left (M1), or not found after `EXIT_SETTLE_S` (300 s) with the coins still on Binance. Not found and the
+   coins gone: nothing is sent. At most `MAX_EXIT_ATTEMPTS` (3), then sell by hand. Reconcile adds all attempts
+   and waits 300 s for a missing one (`exit_waiting`, 🟡). Never re-send a sale whose outcome is unknown.
    5d done: `bot.execution.runner.TestnetRunner` (service `bot-testnet`, state `~/testnet`): every round it
    reconciles (unprotected coins are sold at once; mismatches block until an operator resumes), marks the
    capped account (`bot.execution.account`: capital + changes since the start), runs time stops, then H2b

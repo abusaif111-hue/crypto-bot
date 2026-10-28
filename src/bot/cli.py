@@ -287,8 +287,14 @@ def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=N
     intent_id = new_intent_id()
     book.add_pending(intent_id, args.symbol, rules.base_asset, time.time())
     book.save()                                              # written before anything is sent
+
+    def record_exit(attempt: int) -> None:                   # a sale is recorded before it is sent (PR-2)
+        book.note_exit_attempt(intent_id.hex, attempt, time.time())
+        book.save()
+
     try:
-        outcome = entry.submit(intent, state, snap, rules, wide, trader, intent_id, "majors", sleep=sleep)
+        outcome = entry.submit(intent, state, snap, rules, wide, trader, intent_id, "majors", sleep=sleep,
+                               record_exit=record_exit)
     except OrderStatusUnknown as e:
         out.write(f"  Entry .......... OUTCOME UNKNOWN: {e}\n  The trade stays PENDING in the ledger; run "
                   f"bot reconcile to settle it before anything else.\n")
@@ -317,7 +323,7 @@ def _testnet_roundtrip(args: argparse.Namespace, make_trader=None, make_reader=N
         out.write(f"  Protection ..... stop {outcome.stop.status} {plain(outcome.stop.orig_qty)}, take-profit "
                   f"{outcome.take_profit.status} {plain(outcome.take_profit.orig_qty)}; holding {args.hold:g} s\n")
         sleep(args.hold)
-    rt = roundtrip.close(outcome, trader, rules) if outcome.status == entry.PROTECTED else \
+    rt = roundtrip.close(outcome, trader, rules, record_exit) if outcome.status == entry.PROTECTED else \
         roundtrip.RoundTrip(outcome, problems=[f"entry was {outcome.status}"])
     if outcome.status == entry.PROTECTED:
         _ledger_close(book, rt)
