@@ -173,6 +173,12 @@ bot paper status
    target), sized and checked by `evaluate()` on a hypothetical account; Spot long-only; appends only to its own
    log. Not wired into any runner, backtest or forward test, and untested on history (same family as H4). Wiring it
    into trading, or changing its rules, needs Sultan's approval.
+   `bot plan` (`bot.trade_planner`, DailyTradePlanner; Sultan's 20 USDT live-pilot request, 28 Oct 2026): read-only
+   full plans from D1's verdict (entry FOK, stop, target, size, fees, slippage, max loss, net R:R, expiry,
+   invalidation), every number from `evaluate()` with the limits unchanged; plus the smallest valid order and the
+   equity each limit needs for it. Pilot equity at most `PILOT_MAX_USDT` (20); `--from-account` reads free USDT
+   with the read-only key, capped. At 20 USDT no order passes (R-07: 25% of 20 is below the 5 USDT minimum at
+   the engine's entry price). It places nothing; sending pilot orders is a separate module, not approved or built.
 7. News + LLM, advisory/veto only
    Planned in `docs/intel-plan.md` (approved 24 Oct 2026): official news, market observations, a read-only
    risk monitor (may only block entries) and a daily report; none of it may import trading code.

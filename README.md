@@ -620,6 +620,27 @@ cd ~/crypto-bot && .venv/bin/bot daily-signal --equity 1000 [--loss-today 0] [--
 
 Each run is appended to `~/daily-signal/signals.jsonl`. Nothing is sent to Binance.
 
+## Trade plans for the 20 USDT pilot (`bot plan`, read-only)
+
+`bot plan` (DailyTradePlanner, `src/bot/trade_planner.py`) turns D1's verdict for BTC and ETH into a full
+plan: a BUY LIMIT fill-or-kill entry, stop-loss, take-profit, size, estimated fees and slippage, the
+maximum loss (fees and slippage included), the net reward-to-risk, when the plan expires (the next 4h
+close) and what invalidates it. Every number that decides a trade comes from the risk engine with the
+limits unchanged; a price already above the entry limit is NO TRADE (no chasing).
+
+It also shows whether the pilot can trade at all: the smallest order Binance accepts with D1's stop, what
+it would lose at the stop, and the equity each limit needs for it. With 20 USDT no order can pass: one
+coin may be at most 25% of the account (R-07), which is just under Binance's 5 USDT minimum once the
+engine adds its entry slippage. The limits are never raised to fit.
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot plan --equity 20                 # a hypothetical 20 USDT account
+cd ~/crypto-bot && .venv/bin/bot plan --from-account              # your real free USDT and fee, capped at 20
+```
+
+Each run is appended to `~/pilot-plans/plans.jsonl`. Nothing is sent to Binance; no runner trades these
+plans. D1 has no backtest, paper or live result.
+
 ## Why is H2b not entering? (`bot entries`, read-only)
 
 `bot entries` puts every daily decision since each account started (live, testnet, the H2b forward

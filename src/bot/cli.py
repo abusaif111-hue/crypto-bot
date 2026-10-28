@@ -11,6 +11,7 @@
     bot dashboard [--port 8050]                           (private, read-only page; open it through an SSH tunnel)
     bot signals                                           (how close H2b is to buying each coin; read-only)
     bot daily-signal [--equity 1000]                      (D1 daily trend pullback: LONG or NO TRADE; simulated)
+    bot plan [--equity 20] [--from-account]               (DailyTradePlanner: full plans for the 20 USDT pilot; read-only)
     bot monitor                                           (risk monitor across accounts and coins; read-only)
     bot market                                            (daily market observations; read-only)
     bot report [--send]                                   (the daily report; Telegram once a day with --send)
@@ -1063,6 +1064,54 @@ def _daily_signal(args: argparse.Namespace, make_exchange=None, out=None, now: f
     return 0
 
 
+def _plan(args: argparse.Namespace, make_exchange=None, load_creds=None, out=None, now: float | None = None) -> int:
+    """DailyTradePlanner: a full plan per coin for the pilot account, sized by the risk engine (read-only; places
+    nothing). --from-account reads the real free USDT and taker fee with the read-only key, capped at the pilot
+    allocation. Each run is appended to the plan log unless --no-log."""
+    from bot import trade_planner as tp
+    from bot.exchange.binance import BinanceReadOnly, ExchangeError
+    from bot.exchange.credentials import CredentialsError, load_credentials
+    from bot.market.data import MarketDataService
+    from bot.strategies.daily_pullback import DailyPullback
+
+    out = out or sys.stdout
+    now = time.time() if now is None else now
+    cfg = load_config(args.config)
+    try:
+        equity, loss_today, fee = D(args.equity), D(args.loss_today), D(args.fee)
+    except ArithmeticError:
+        print("Error: --equity, --loss-today and --fee must be numbers", file=sys.stderr)
+        return 2
+    if not 0 < equity <= tp.PILOT_MAX_USDT or loss_today < 0 or loss_today >= equity or not 0 <= fee < 1:
+        print(f"Error: --equity must be above 0 and at most {tp.PILOT_MAX_USDT} USDT (the pilot allocation), "
+              f"--loss-today between 0 and the equity, --fee a fraction", file=sys.stderr)
+        return 2
+    make_exchange = make_exchange or BinanceReadOnly
+    if args.from_account:
+        try:
+            ex = make_exchange(environment="live", credentials=(load_creds or load_credentials)())
+            free = sum((b.free for b in ex.balances() if b.asset == "USDT"), D(0))
+            fee = ex.taker_fee(cfg.universe[0])
+        except (CredentialsError, ExchangeError) as e:
+            print(f"Error: could not read the account with the read-only key: {e}", file=sys.stderr)
+            return 4
+        if free <= loss_today:
+            print(f"The account has {plain(free)} USDT free: no pilot plan can be made.", file=sys.stderr)
+            return 3
+        out.write(f"Account: {plain(free)} USDT free; taker fee {plain(fee * 100)}%; the pilot uses "
+                  f"{plain(min(free, equity))} USDT of it.\n")
+        equity = min(free, equity)
+    else:
+        ex = make_exchange(environment="live")
+    data = MarketDataService(ex, cfg)
+    plans = tp.plan(DailyPullback(list(cfg.universe)), data, cfg, equity, now, loss_today, fee)
+    out.write(tp.render(plans, equity, loss_today, now, cfg))
+    if not args.no_log:
+        path = tp.record(Path(os.path.expanduser(args.log_dir)), plans, equity)
+        out.write(f"Logged to {path}\n")
+    return 0
+
+
 def _entries(args: argparse.Namespace, make_exchange=None, out=None, now: float | None = None) -> int:
     """Why H2b is not entering, per account and coin (read-only; public Binance data; changes nothing)."""
     from datetime import datetime, timezone
@@ -1784,6 +1833,13 @@ def main(argv: list[str] | None = None) -> int:
     ds.add_argument("--fee", default="0.001", help="taker fee as a fraction (0.001 = 0.1%%)")
     ds.add_argument("--log-dir", default="~/daily-signal", help="where signals.jsonl is appended")
     ds.add_argument("--no-log", action="store_true", help="print only; write nothing")
+    pl = sub.add_parser("plan", help="DailyTradePlanner: full trade plans for the 20 USDT pilot (read-only; places nothing)")
+    pl.add_argument("--equity", default="20", help="pilot equity in USDT (at most 20)")
+    pl.add_argument("--from-account", action="store_true", help="use the real free USDT and fee (read-only key), capped")
+    pl.add_argument("--loss-today", default="0", help="USDT already lost today (the daily loss limit applies)")
+    pl.add_argument("--fee", default="0.001", help="taker fee as a fraction (0.001 = 0.1%%)")
+    pl.add_argument("--log-dir", default="~/pilot-plans", help="where plans.jsonl is appended")
+    pl.add_argument("--no-log", action="store_true", help="print only; write nothing")
     en = sub.add_parser("entries", help="why H2b is not entering, per account and coin (read-only; changes nothing)")
     en.add_argument("--home", default="~", help="the folder holding live/, testnet/, paper/ and forward-h2b/")
     en.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
@@ -1915,6 +1971,8 @@ def main(argv: list[str] | None = None) -> int:
             return _signals(args)
         if args.cmd == "daily-signal":
             return _daily_signal(args)
+        if args.cmd == "plan":
+            return _plan(args)
         if args.cmd == "entries":
             return _entries(args)
         if args.cmd == "news":
