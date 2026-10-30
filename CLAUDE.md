@@ -180,7 +180,9 @@ bot paper status
 6. Loss-review loop, dashboard (FastAPI, not public), Telegram alerts
    Dashboard done: `bot.dashboard` (service `bot-dashboard`), Python's own HTTP server instead of FastAPI (no new
    dependency on the 512 MB server). Read-only: imports nothing from `bot`, never reads `.env`, GET only, binds
-   127.0.0.1 only (`serve` refuses any other address); opened through an SSH tunnel. Telegram alerts: 5e.
+   127.0.0.1 only (`serve` refuses any other address); opened through an SSH tunnel, or (Sultan's request, 28 Oct
+   2026) through `scripts/install_dashboard_web.sh`: Caddy with a password (basic auth, hash only) and HTTPS in front
+   of 127.0.0.1:8050; the dashboard itself stays loopback-only. Never expose it without that password. Telegram alerts: 5e.
    `bot signals` (`bot.signal_report`): read-only per-coin view of H2b's daily checks; the verdict is
    `BlendedMomentum.signal()` itself; it never changes `h2b_blend.py`, places orders or writes files.
    `bot entries` (`bot.entry_diagnosis`): read-only; each account's daily decisions per coin in five categories

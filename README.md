@@ -594,6 +594,22 @@ ssh -N -L 8050:127.0.0.1:8050 root@167.71.59.188
 and open **http://localhost:8050** in your browser. Close the terminal (or Ctrl+C) to close the tunnel.
 This needs SSH access to the server (your SSH key or root password from DigitalOcean).
 
+**On the web, with a password (optional).** `scripts/install_dashboard_web.sh` puts Caddy in front of
+the dashboard: a web link with a username and password, over HTTPS (Caddy gets the certificate from
+Let's Encrypt itself). The dashboard does not change and still listens on `127.0.0.1:8050`; only Caddy
+is on the internet, on ports 80 and 443. First give the server a name that points at its IP address
+(for example a free one from duckdns.org), then, as root:
+
+```bash
+bash /home/bot/crypto-bot/scripts/install_dashboard_web.sh      # asks for the name and a password
+```
+
+The password is typed hidden, at least 12 characters, and never printed; only its hash is kept, in
+`/etc/caddy/Caddyfile` (readable by root and Caddy). The username is `sultan`. If DigitalOcean has a
+cloud firewall on the Droplet, allow HTTP (80) and HTTPS (443) there. Turn the web link off at any time
+with `systemctl stop caddy`. The page has no trading controls, but it shows your balances and trades:
+use a password you use nowhere else.
+
 ## How close is H2b to buying? (`bot signals`, read-only)
 
 `bot signals` shows, for each of the forward test's coins, what H2b checks once a day after the
