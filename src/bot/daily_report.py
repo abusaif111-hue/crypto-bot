@@ -55,6 +55,13 @@ RESEARCH = (
     ("H4 hourly pullbacks", "walk-forward 331 trades, -1.51 USDT per trade (-5.68 with doubled costs)",
      "did not qualify"),
     ("I1-I3 intraday (15m)", "not run", "paused by Sultan on 25 Oct 2026 (15m data does not fit the 512 MB server)"),
+    ("H1DT-BRK 1h breakout", "walk-forward 162 trades, -9.21 USDT per trade (-13.84 with doubled costs)",
+     "did not qualify"),
+    ("H1DT-CONT 1h continuation", "walk-forward 192 trades, -8.25 USDT per trade (-14.79 with doubled costs)",
+     "did not qualify"),
+    ("H1DT-RNG 1h range", "walk-forward 76 trades, -10.37 USDT per trade (-16.73 with doubled costs)",
+     "did not qualify"),
+    ("D1 daily trend pullback", "walk-forward 12 trades, -3.76 USDT per trade", "did not qualify"),
 )
 FORWARD_MIN_TRADES, FORWARD_MIN_DAYS = 30, 365
 

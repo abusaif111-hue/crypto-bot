@@ -207,6 +207,11 @@ bot paper status
    tune or re-run a setup after its result. Future plans: `bot plan --strategy H1DT` (`bot.h1dt_plans`, read-only:
    READY / WATCHING / NOT TRADEABLE, engine verdicts, order eligibility incl. coins already held with H2b). Nothing
    trades it; wiring it into any runner needs Sultan's approval and a passing study.
+   **The study ran on 28 Oct 2026 (report `~/backtests/20261028-191927-h1dt-study`): no setup qualified, and all
+   three are rejected:** BRK 162 out-of-sample trades, -9.21 USDT per trade (-13.84 doubled costs), PF 0.41;
+   CONT 192, -8.25 (-14.79), PF 0.45; RNG 76, -10.37 (-16.73), PF 0.31; BRK and CONT breached the 6% breaker
+   and were no better than random entries with the same exits. D1 (baseline): 12 trades, -3.76 per trade, did not
+   qualify. Per the study's rules none is tuned or re-run, and none gets a forward test or the pilot.
 7. News + LLM, advisory/veto only
    Planned in `docs/intel-plan.md` (approved 24 Oct 2026): official news, market observations, a read-only
    risk monitor (may only block entries) and a daily report; none of it may import trading code.
