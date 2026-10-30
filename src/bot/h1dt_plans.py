@@ -12,7 +12,8 @@ eligible only when READY, accepted on the pilot, and the account holds none of t
 shared with H2b, so coins already held would overlap).
 
 Read-only: it places no order and is not wired into any runner. Levels are recomputed at every 1h close.
-H1-DailyTrader has no backtest, paper or live result yet.
+H1-DailyTrader was rejected by its walk-forward study on 28 Oct 2026 (every setup lost money out of sample):
+these plans are information only and must not be traded.
 """
 from __future__ import annotations
 
@@ -62,13 +63,14 @@ def _next_hour(now: float) -> float:
     return (t - t % HOUR_MS + HOUR_MS) / 1000
 
 
-def _projection(s: DailyTrader, hours: list) -> tuple[Decimal, Decimal, Decimal, list[str], list[str], str] | None:
-    """(entry, stop, target, met, needs, invalidation) if the setup triggered at the next 1h close, at the level
-    it needs; None when no level can be computed."""
+def _projection(s: DailyTrader, hours: list) -> tuple[Decimal, Decimal, Decimal, list[str], list[str], str, str] | None:
+    """(entry, stop, target, met, needs, invalidation, refused) if the setup triggered at the next 1h close, at the
+    level it needs; `refused` is the setup's own rule that would refuse it there ("" if none). None when no level
+    can be computed."""
     a = s._atr(hours)
     if a is None:
         return None
-    met, needs = [], []
+    met, needs, top = [], [], None
     if s.setup in ("BRK", "CONT"):
         n = s.lookback if s.setup == "BRK" else CONT_BREAK
         level = max(c.high for c in hours[-n:])
@@ -95,11 +97,16 @@ def _projection(s: DailyTrader, hours: list) -> tuple[Decimal, Decimal, Decimal,
                      f"closing up, above {plain(lo)}")
         entry = entry_limit(zone)
         stop = lo - s.stop_atr * a
+        top = hi
         invalid = f"a 1h close below the range low {plain(lo)}"
     if not 0 < stop < entry:
         return None
     target = entry + s.target_r * (entry - stop)
-    return entry, stop, target, met, needs, invalid
+    refused = ""
+    if top is not None and target > top:                     # the same rule as DailyTrader.trigger()
+        refused = (f"the target {plain(floor_price(target, D('0.01')))} would be above the range top {plain(top)}: "
+                   f"the range setup's own rule refuses it")
+    return entry, stop, target, met, needs, invalid, refused
 
 
 def plan_setup(s: DailyTrader, data: MarketData, symbol: str, cfg: AppConfig, state: AccountState, now: float,
@@ -125,11 +132,14 @@ def plan_setup(s: DailyTrader, data: MarketData, symbol: str, cfg: AppConfig, st
         p = _projection(s, hours)
         if p is None:
             return Plan(symbol, s.setup, now, NO_DATA, "no valid 1h ATR or levels", snap.best_ask)
-        entry, stop, target, met, needs, invalid = p
+        entry, stop, target, met, needs, invalid, refused = p
         met = [*([ctx_why] if ctx_ok else []), *met]
         needs = [*([] if ctx_ok else [f"the 4h context: {ctx_why}"]), *needs]
         met, needs, status_if_ok, why = tuple(met), tuple(needs), WATCHING, "not triggered yet"
         until = _next_hour(now)
+        if refused:
+            return Plan(symbol, s.setup, now, NOT_TRADEABLE, refused, snap.best_ask, met, needs,
+                        *(floor_price(x, rules.tick_size) for x in (entry, stop, target)), until, invalid)
     entry, stop, target = (floor_price(x, rules.tick_size) for x in (entry, stop, target))
     intent = s.intent(symbol, Setup(entry, stop, target, ZERO, why, invalid))
     fee = state.taker_fee_rate
@@ -206,5 +216,6 @@ def render(ps: list[Plan], equity: Decimal, now: float) -> str:
         if p.order:
             L.append(f"  Exchange order: {p.order}")
         L.append("")
-    L.append("Projections and plans, not orders. H1-DailyTrader has no backtest, paper or live result yet.")
+    L.append("Projections and plans, not orders. H1-DailyTrader was REJECTED by its walk-forward study (28 Oct 2026):")
+    L.append("every setup lost money out of sample. These plans are information only; do not trade them.")
     return "\n".join(L) + "\n"

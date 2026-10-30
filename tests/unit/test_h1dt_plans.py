@@ -127,3 +127,16 @@ def test_the_plans_cannot_reach_orders_credentials_or_h2b():
     for bad in ("bot.execution", "bot.exchange.trading", "bot.exchange.credentials", "bot.exchange.binance",
                 "bot.forward", "bot.paper", "bot.strategies.h2b_blend"):
         assert not any(m == bad or m.startswith(bad + ".") for m in mods), bad
+
+
+def test_a_range_target_above_the_range_top_is_refused_by_the_setups_own_rule():
+    # the same rule as DailyTrader.trigger(): the target must lie inside the range
+    p = plan("RNG", ranging(), target_r=Dec("20"))
+    assert p.status == hp.NOT_TRADEABLE and "above the range top" in p.reason and p.check is None
+    assert p.target is not None and p.order == ""
+
+
+def test_the_footer_says_the_strategy_was_rejected():
+    cs = breakout()
+    text = hp.render(hp.plans(Data({"BTCUSDT": cs, "ETHUSDT": cs}), AppConfig(), Dec(20), at(cs)), Dec(20), at(cs))
+    assert "REJECTED by its walk-forward study" in text and "do not trade them" in text
