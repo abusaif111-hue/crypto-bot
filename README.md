@@ -697,8 +697,22 @@ by the risk engine when it is placed, and again when it fills.
 cd ~/crypto-bot && .venv/bin/bot backtest run --strategy H5 --screened      # the backtest (an hour or more)
 ```
 
-So far H5 exists only in the backtester. Real orders placed in advance on Binance come only after a passing
-backtest, 5 clean testnet trades and a forward test, and only when Sultan switches it on.
+H5 passed walk-forward on 31 Oct 2026 (202 trades over the research period, +9.13 USDT per trade, above
+random entries with the same exits). Binance does not accept a protected stop-type buy waiting on the
+exchange, so the bot holds each day's order itself: every minute it checks the price, and once it trades
+above the level (and not more than 0.5% past it) it sends the same protected buy H2b uses, with the
+stop-loss and take-profit attached, after a fresh risk check. If the server is down, nothing is bought.
+
+H5 runs inside the testnet or live runner, next to H2b, only after Sultan switches it on for that runner,
+sized on at most the capital he gives it:
+
+```bash
+testnet h5-enable --operator Sultan --capital 100     # then, as root: systemctl restart bot-testnet
+testnet status                                        # shows 'H5: on' and today's held orders
+```
+
+Testnet first; the live switch (`live h5-enable`) is Sultan's own step. At 100 USDT, orders whose stop is
+more than about 3-4% away are below Binance's 5 USDT minimum and are refused (correctly).
 
 ## How a trade is sized
 

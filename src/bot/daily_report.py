@@ -55,6 +55,9 @@ RESEARCH = (
     ("H4 hourly pullbacks", "walk-forward 331 trades, -1.51 USDT per trade (-5.68 with doubled costs)",
      "did not qualify"),
     ("I1-I3 intraday (15m)", "not run", "paused by Sultan on 25 Oct 2026 (15m data does not fit the 512 MB server)"),
+    ("H5 daily breakout (orders held in advance)",
+     "full research period 202 trades, +9.13 USDT per trade, above random entries (95th percentile +5.83)",
+     "passed walk-forward (31 Oct 2026); next: held orders on the testnet, then live with 100 USDT"),
 )
 FORWARD_MIN_TRADES, FORWARD_MIN_DAYS = 30, 365
 

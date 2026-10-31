@@ -76,6 +76,21 @@ BTC, ETH, XRP and BNB, with H2b's correlation groups (BTC and ETH together). No 
 
 ## 4. Orders placed in advance: what has to be built (after approval)
 
+> **Amended by Sultan's decision 4 (31 Oct 2026):** Binance Spot does not accept a stop-type buy as the
+> working (first) order of an OTOCO or OPOCO list: only LIMIT or LIMIT_MAKER (checked in
+> `binance-sdk-spot`'s own definitions, OrderListOtocoWorkingTypeEnum and OrderListOpocoWorkingTypeEnum).
+> So, as item 1 foresaw, there is no protected advance order on the exchange. Sultan chose instead that
+> **the bot holds each daily order itself** (`bot.execution.held`): every round (60 s) the runner checks
+> the best ask, and once it trades above the trigger and is still within the limit, it sends the existing
+> protected entry (BUY LIMIT FOK at the limit with the stop-loss and take-profit in one list, after a
+> fresh `evaluate()`). Protection exists from the first fill, as item 1 required. A held order is one
+> attempt, expires at the next 00:00 UTC, and all are dropped when entries are blocked; if the server is
+> down, nothing is bought. H5's rules (section 3) are unchanged; only how the order is held changed, so
+> it is not a new strategy. Items 3 and 4 become: held orders live in the runner's own file
+> (`held-orders.json`), and H5 runs in the same runner, ledger and reconciliation as H2b, so nothing on
+> the shared Binance account is unknown to either. H5's trades are sized on at most its own capital
+> (`bot testnet|live h5-enable --capital`, Sultan's step).
+
 1. **The order:** Binance's OTOCO list: a waiting buy, and, once it fills, a stop-loss and a
    take-profit attached automatically, so the position is protected the moment it exists. *Verify
    on testnet:* whether Binance accepts a stop-type buy as the waiting leg of OTOCO. If it does not,
@@ -125,3 +140,6 @@ BTC, ETH, XRP and BNB, with H2b's correlation groups (BTC and ETH together). No 
    usually wider, so most H5 orders on a 100 USDT live trial would be refused as below the minimum.
    The backtest, testnet and forward test use their own capital and are not affected. Sultan may
    revisit the amount before live; the risk limits are not loosened to fit it.
+4. **Decided (31 Oct 2026): the bot holds each daily order itself** (see the note at the top of section 4),
+   because Binance does not accept a protected stop-type advance order. The forward test runs alongside
+   live, as for H2b; the testnet check of the held orders comes first.
