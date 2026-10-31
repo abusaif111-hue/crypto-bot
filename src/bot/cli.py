@@ -17,7 +17,7 @@
     bot live check | baseline | reconcile | start | run | status | pending | resume | block   (REAL money)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
-    bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b, H4)
+    bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b, H4, H5)
     bot backtest h4-memory                                (once: H4 on four coins or BTC/ETH only, by measured memory)
     bot backtest holdout                                  (the one-time holdout test; Sultan only)
 
@@ -690,6 +690,7 @@ def _testnet_run(args: argparse.Namespace, make_trader=None, make_reader=None, m
     from bot.exchange.credentials import CredentialsError
     from bot.execution.account import AccountError, TradingAccount
     from bot.execution.ledger import Ledger, LedgerError
+    from bot.execution import held
     from bot.execution.runner import RunnerError, TestnetRunner
     from bot.market.data import MarketDataService
     from bot.paper.runner import RunnerLock, RunnerLocked
@@ -717,9 +718,11 @@ def _testnet_run(args: argparse.Namespace, make_trader=None, make_reader=None, m
         signals = MarketDataService((make_live or BinanceReadOnly)(environment="live"), cfg)
         with RunnerLock(state_dir):
             now = time.time()
-            runner = TestnetRunner(state_dir, cfg, trader, exchange, signals, [forward.make_strategy(ft)],
+            strategies, caps = _runner_strategies(state_dir, forward.make_strategy(ft), list(ft.symbols))
+            runner = TestnetRunner(state_dir, cfg, trader, exchange, signals, strategies,
                                    dict(ft.corr_groups), Ledger.load(state_dir, env),
-                                   TradingAccount.load(state_dir, cfg, now), out=out or sys.stdout)
+                                   TradingAccount.load(state_dir, cfg, now), out=out or sys.stdout,
+                                   strategy_caps=caps)
 
             def stop(signum, frame):
                 runner.stop_requested = True
@@ -731,9 +734,44 @@ def _testnet_run(args: argparse.Namespace, make_trader=None, make_reader=None, m
                 for s, h in old.items():
                     signal.signal(s, h)
     except (forward.ForwardError, CredentialsError, LedgerError, AccountError, RunnerError, RunnerLocked,
-            LiveTradingNotConfirmed, ExchangeError) as e:
+            LiveTradingNotConfirmed, ExchangeError, held.HeldError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
+    return 0
+
+
+def _runner_strategies(state_dir: Path, h2b, symbols: list[str]) -> tuple[list, dict]:
+    """H2b always (the forward test's frozen settings); H5 too, on the same coins, once Sultan ran h5-enable for
+    this runner, sized on at most its capital."""
+    from bot.execution import held
+    from bot.strategies.h5_breakout import DailyBreakout
+
+    h5_capital = held.load_h5(state_dir)
+    if h5_capital is None:
+        return [h2b], {}
+    return [h2b, DailyBreakout(list(symbols))], {"H5": h5_capital}
+
+
+def _h5_enable(args: argparse.Namespace, out=None) -> int:
+    """Sultan's step: let this runner trade H5 (docs/h5-plan.md), sized on at most --capital of its account."""
+    import json
+
+    from bot.execution import held
+    from bot.execution.account import ACCOUNT_FILE
+
+    out = out or sys.stdout
+    env = _env(args)
+    state_dir = Path(os.path.expanduser(args.state_dir))
+    try:
+        account_capital = D(json.loads((state_dir / ACCOUNT_FILE).read_text())["capital"])
+        rec = held.enable_h5(state_dir, args.operator, D(args.capital), account_capital, time.time())
+    except (OSError, ValueError, KeyError, ArithmeticError, held.HeldError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    out.write(f"H5 is switched on for the {env} runner in {state_dir} by {rec['enabled_by']}: its trades are sized "
+              f"on at most {fmt(D(rec['capital']))} of the account's {fmt(account_capital)} USDT.\n"
+              f"It starts at the runner's next start: restart the service (as root: systemctl restart "
+              f"bot-{env}), then check: bot {env} status\n")
     return 0
 
 
@@ -786,6 +824,18 @@ def _testnet_status(args: argparse.Namespace, out=None) -> int:
     for t in by[OPEN] + by[PENDING]:
         out.write(f"  {t.status:<8} {t.symbol} {plain(t.received_qty)} bought {fmt(t.entry_price)}, stop "
                   f"{fmt(t.stop_price)}, take-profit {fmt(t.take_profit_price)} ({t.strategy or '?'})\n")
+    from bot.execution import held
+    try:
+        h5_capital, orders = held.load_h5(state_dir), held.load(state_dir)
+    except held.HeldError as e:
+        out.write(f"H5: {e}\n")
+        return 0
+    if h5_capital is not None:
+        out.write(f"H5: on, sized on at most {fmt(h5_capital)} USDT; orders the bot holds today: {len(orders)}\n")
+        for o in orders.values():
+            until = time.strftime('%Y-%m-%d %H:%M', time.gmtime(o.valid_until))
+            out.write(f"  HELD     {o.symbol} buy above {fmt(o.trigger)} (at most {fmt(o.limit)}), stop {fmt(o.stop)}, "
+                      f"take-profit {fmt(o.target)}, until {until} UTC\n")
     return 0
 
 
@@ -941,12 +991,12 @@ def _market(args: argparse.Namespace, make_exchange=None, out=None) -> int:
     return 0
 
 
-def _news_check(args: argparse.Namespace, http=None, out=None) -> int:
+def _news_check(args: argparse.Namespace, http=None, out=None, now: float | None = None) -> int:
     """Fetch and read every official news source once, and record which ones work (on the server)."""
     from bot.news import feed, sources
 
     out = out or sys.stdout
-    now = time.time()
+    now = time.time() if now is None else now
     checks, items = feed.read_all(now, http=http or sources._https)
     path = sources.save_check(checks, Path(os.path.expanduser(args.news_dir)), now)
     out.write(f"Official news sources, checked {sources.utc(now)} (read-only; public feeds):\n")
@@ -1601,9 +1651,9 @@ def _backtest_baselines(args: argparse.Namespace, out=None) -> int:
     return 0
 
 
-STRATEGIES = ("H1", "H2", "H3", "H2b", "H4")
+STRATEGIES = ("H1", "H2", "H3", "H2b", "H4", "H5")
 DEFAULT_RUN = ("H1", "H2", "H3", "H2b")       # H4 runs on its own: 1h candles and its own coins (docs/h4-plan.md)
-HOLDOUT_STRATEGIES = ("H1", "H2", "H3")      # H2b and H4 were designed after the holdout was seen
+HOLDOUT_STRATEGIES = ("H1", "H2", "H3")      # H2b, H4 and H5 were designed after the holdout was seen
 
 
 def _make_strategy(name: str, symbols: list[str]):
@@ -1612,9 +1662,10 @@ def _make_strategy(name: str, symbols: list[str]):
     from bot.strategies.h2b_blend import BlendedMomentum
     from bot.strategies.h3_mean_reversion import RangeMeanReversion
     from bot.strategies.h4_pullback import TrendPullback
+    from bot.strategies.h5_breakout import DailyBreakout
 
     return {"H1": TrendBreakout, "H2": TimeSeriesMomentum, "H3": RangeMeanReversion,
-            "H2b": BlendedMomentum, "H4": TrendPullback}[name](symbols)
+            "H2b": BlendedMomentum, "H4": TrendPullback, "H5": DailyBreakout}[name](symbols)
 
 
 def _backtest_run(args: argparse.Namespace, out=None) -> int:
@@ -1794,6 +1845,9 @@ def main(argv: list[str] | None = None) -> int:
     trn.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
     tsub.add_parser("status", help="mode, equity, open trades (from the runner's files)")
     tsub.add_parser("pending", help="why a PENDING trade is not settled yet (read-only; changes nothing)")
+    he = tsub.add_parser("h5-enable", help="Sultan's step: let this runner trade H5, sized on at most --capital")
+    he.add_argument("--operator", required=True)
+    he.add_argument("--capital", required=True, help="USDT of the account H5 may size on (100 for the trial)")
     for name, help_ in (("resume", "allow new entries (refused while a breaker or fault is active)"),
                         ("block", "block new entries; exits keep working")):
         q = tsub.add_parser(name, help=help_)
@@ -1819,6 +1873,9 @@ def main(argv: list[str] | None = None) -> int:
     lrn.add_argument("--forward-dir", default=DEFAULT_FORWARD_DIR, help="H2b's frozen settings and coins")
     lsub.add_parser("status", help="mode, equity, open trades (from the runner's files)")
     lsub.add_parser("pending", help="why a PENDING trade is not settled yet (read-only; changes nothing)")
+    he = lsub.add_parser("h5-enable", help="Sultan's step: let this runner trade H5, sized on at most --capital")
+    he.add_argument("--operator", required=True)
+    he.add_argument("--capital", required=True, help="USDT of the account H5 may size on (100 for the trial)")
     for name, help_ in (("resume", "allow new entries (refused while a breaker or fault is active)"),
                         ("block", "block new entries; exits keep working")):
         q = lsub.add_parser(name, help=help_)
@@ -1931,7 +1988,8 @@ def main(argv: list[str] | None = None) -> int:
     bb.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     br = bsub.add_parser("run", help="walk-forward and robustness tests of strategies H1-H3, H2b (research period)")
     br.add_argument("--strategy", nargs="+", choices=STRATEGIES, default=list(DEFAULT_RUN),
-                    help="default: H1 H2 H3 H2b; H4 runs alone, on the coins from bot backtest h4-memory")
+                    help="default: H1 H2 H3 H2b; H4 runs alone, on the coins from bot backtest h4-memory; "
+                         "H5 (docs/h5-plan.md) with --screened")
     br.add_argument("--random-runs", type=int, default=50, help="random-entry runs with the same exits")
     br.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     br.add_argument("--screened", action="store_true",
@@ -1982,10 +2040,12 @@ def main(argv: list[str] | None = None) -> int:
                 return _reconcile_cmd(args)
             return {"check": _live_check, "start": _testnet_start, "run": _testnet_run, "status": _testnet_status,
                     "pending": _pending_cmd,
-                    "resume": _paper_request("resume"), "block": _paper_request("block")}[args.live_cmd](args)
+                    "resume": _paper_request("resume"), "block": _paper_request("block"),
+                    "h5-enable": _h5_enable}[args.live_cmd](args)
         if args.cmd == "testnet":
             return {"start": _testnet_start, "run": _testnet_run, "status": _testnet_status, "pending": _pending_cmd,
-                    "resume": _paper_request("resume"), "block": _paper_request("block")}[args.testnet_cmd](args)
+                    "resume": _paper_request("resume"), "block": _paper_request("block"),
+                    "h5-enable": _h5_enable}[args.testnet_cmd](args)
         if args.cmd == "paper":
             return {"run": _paper_run, "status": _paper_status, "resume": _paper_request("resume"),
                     "block": _paper_request("block"), "trade": _paper_request("trade")}[args.paper_cmd](args)

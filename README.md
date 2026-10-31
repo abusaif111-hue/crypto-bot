@@ -685,6 +685,35 @@ root); open trades keep their stop-loss and take-profit on Binance. `live block`
 only. Removing `BOT_LIVE_CONFIRM` or setting `live_trading: false` stops the runner from starting
 again. Telegram alerts cover the live runner too.
 
+## H5: daily breakout with orders placed in advance (backtest stage)
+
+H5 (`docs/h5-plan.md`, approved 31 Oct 2026) places one buy order per coin every day at 00:00 UTC, for BTC,
+ETH, XRP and BNB: it buys only once the price trades above the highest high of the last 20 days, never more
+than 0.5% above that level, and the order lasts one day. Its stop is 2 daily ATRs below the level, its target
+3 times that distance; it sells on a daily close below the 10-day low or after 30 days. Every order is checked
+by the risk engine when it is placed, and again when it fills.
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot backtest run --strategy H5 --screened      # the backtest (an hour or more)
+```
+
+H5 passed walk-forward on 31 Oct 2026 (202 trades over the research period, +9.13 USDT per trade, above
+random entries with the same exits). Binance does not accept a protected stop-type buy waiting on the
+exchange, so the bot holds each day's order itself: every minute it checks the price, and once it trades
+above the level (and not more than 0.5% past it) it sends the same protected buy H2b uses, with the
+stop-loss and take-profit attached, after a fresh risk check. If the server is down, nothing is bought.
+
+H5 runs inside the testnet or live runner, next to H2b, only after Sultan switches it on for that runner,
+sized on at most the capital he gives it:
+
+```bash
+testnet h5-enable --operator Sultan --capital 100     # then, as root: systemctl restart bot-testnet
+testnet status                                        # shows 'H5: on' and today's held orders
+```
+
+Testnet first; the live switch (`live h5-enable`) is Sultan's own step. At 100 USDT, orders whose stop is
+more than about 3-4% away are below Binance's 5 USDT minimum and are refused (correctly).
+
 ## How a trade is sized
 
 1. Entry is assumed to fill slightly worse than planned (0.05%), and the stop

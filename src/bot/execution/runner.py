@@ -17,6 +17,12 @@ Every round (default 60 seconds) it:
    all, in the same round or later ones, until reconciliation settles it.
    The candle each strategy decided on is saved first (`strategy-clock.json`), so a restart
    neither repeats nor skips a decision.
+5. orders the bot holds itself (H5's daily orders placed in advance, `bot.execution.held`): an idea with a
+   trigger is kept in `held-orders.json`, one per coin, never for a coin already held; every round, once the
+   best ask trades above its trigger and is still within its limit, it is entered as in step 4 (written
+   PENDING, then `entry.submit()` with a fresh risk check and the protection attached). One attempt each; they
+   expire, and all are dropped as soon as entries are blocked. A strategy listed in `strategy_caps` is sized
+   on at most that much of the account (H5's trial capital), which only ever makes its trades smaller.
 
 Signals come from live market data (the same prices the forward test sees); orders, the risk
 engine's market snapshot and valuations use the exchange's own prices and rules. On the real exchange the
@@ -30,7 +36,7 @@ import json
 import os
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Protocol, TextIO
@@ -41,7 +47,7 @@ from bot.core.money import ZERO, fmt
 from bot.exchange.binance import ExchangeError
 from bot.exchange.interface import INTERVAL_MS
 from bot.exchange.trading import BinanceTrader, LiveAuthorization, OrderStatusUnknown
-from bot.execution import entry, exit as exits, reconcile
+from bot.execution import entry, exit as exits, held as held_orders, reconcile
 from bot.execution.account import QUOTE, TradingAccount, as_utc
 from bot.execution.ledger import CLOSED, NOT_OPENED, OPEN, PENDING, Ledger, LedgerError, TrackedTrade
 from bot.market.data import MarketDataService, MarketDataUnavailable
@@ -83,6 +89,7 @@ class TestnetRunner:
     account: TradingAccount
     clock: Callable[[], float] = time.time
     out: TextIO | None = None
+    strategy_caps: dict[str, Decimal] = field(default_factory=dict)   # strategy -> most of the account it sizes on
     stop_requested: bool = field(default=False, init=False)
     _decided: dict[str, int] = field(default_factory=dict, init=False)
     _failed: dict[str, tuple[int, float]] = field(default_factory=dict, init=False)
@@ -91,6 +98,7 @@ class TestnetRunner:
     _exit_waits: set[str] = field(default_factory=set, init=False)
     _last_status: float = field(default=0.0, init=False)
     _seen_history: int = field(default=0, init=False)
+    held: dict[str, held_orders.HeldOrder] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         if self.trader.environment not in ("testnet", "live"):
@@ -104,6 +112,10 @@ class TestnetRunner:
         self.state_dir = Path(self.state_dir)
         (self.state_dir / REQUESTS_DIR).mkdir(parents=True, exist_ok=True, mode=0o700)
         self._decided = _load_clock(self.state_dir / CLOCK_FILE)
+        try:
+            self.held = held_orders.load(self.state_dir)
+        except held_orders.HeldError as e:
+            raise RunnerError(str(e)) from None
         self._seen_history = len(self.account.modes.history)
 
     # ------------------------------------------------------------ journal
@@ -143,6 +155,7 @@ class TestnetRunner:
         self._time_stops(now)
         for s in self.strategies:
             self._run_strategy(s, now, entries_ok=clean)
+        self._check_held(now, entries_ok=clean)
         self._report_mode_changes()
         if state is not None and now - self._last_status >= STATUS_EVERY_S:
             self._last_status = now
@@ -323,7 +336,10 @@ class TestnetRunner:
                         self._close(t, now, f"strategy exit: {a.reason}")
             # A raised stop would mean replacing the protection on the exchange; H2b never raises one.
         for intent in intents:
-            self._enter(intent, now, entries_ok)
+            if intent.trigger_price is not None:
+                self._hold(intent, now)
+            else:
+                self._enter(intent, now, entries_ok)
 
     def _enter(self, intent: TradeIntent, now: float, entries_ok: bool) -> None:
         pending = [t for t in self.ledger.trades.values() if t.status == PENDING]
@@ -334,6 +350,9 @@ class TestnetRunner:
                             f"entries stay blocked until reconciliation settles it")
             return
         state = self._state(now, entries_ok)
+        cap = self.strategy_caps.get(intent.strategy)
+        if state is not None and cap is not None:            # sized on at most this strategy's own capital
+            state = replace(state, equity=min(state.equity, cap), free_quote=min(state.free_quote, cap))
         if state is not None and state.mode is not Mode.RUNNING:
             self.log("entry_blocked", symbol=intent.symbol, strategy=intent.strategy, mode=state.mode.value,
                      breaches=sorted(self.account.modes.active_breaches), reason=self._blocked_reason or None)
@@ -371,6 +390,60 @@ class TestnetRunner:
             self.account.modes.block_entries("system", f"{intent.symbol} entry {out.status}: {out.reason}")
             if out.status == entry.UNPROTECTED:
                 self.account.modes.report_fault("UNPROTECTED_POSITION", out.reason)
+
+
+    # ------------------------------------------------------------ 5. orders the bot holds itself
+    def _hold(self, intent: TradeIntent, now: float) -> None:
+        busy = {t.symbol for t in self.ledger.trades.values() if t.status in (OPEN, PENDING)}
+        if intent.symbol in busy:
+            self.log("held_order_skipped", symbol=intent.symbol, strategy=intent.strategy,
+                     reason="the coin is already held or its entry is pending")
+            return
+        try:
+            order = held_orders.HeldOrder.from_intent(intent, now)
+        except held_orders.HeldError as e:
+            self.log("held_order_skipped", symbol=intent.symbol, strategy=intent.strategy, reason=str(e))
+            return
+        replaced = intent.symbol in self.held
+        self.held[intent.symbol] = order                       # one per coin: today's replaces yesterday's
+        held_orders.save(self.state_dir, self.held)
+        self.log("held_order_placed", symbol=order.symbol, strategy=order.strategy, trigger=order.trigger,
+                 limit=order.limit, stop=order.stop, target=order.target, valid_until=order.valid_until,
+                 replaced=replaced)
+
+    def _check_held(self, now: float, entries_ok: bool) -> None:
+        if not self.held:
+            return
+        changed = False
+        for s in [s for s, o in self.held.items() if now >= o.valid_until]:
+            o = self.held.pop(s)
+            changed = True
+            self.log("held_order_expired", symbol=s, strategy=o.strategy, trigger=o.trigger)
+        modes = self.account.modes
+        if self.held and not (modes.mode is Mode.RUNNING and modes.entries_allowed):
+            for s, o in list(self.held.items()):
+                self.log("held_order_cancelled", symbol=s, strategy=o.strategy, mode=modes.mode.value,
+                         reason="entries are blocked")
+            self.held.clear()
+            changed = True
+        if self.held and entries_ok:
+            try:
+                books = self.exchange.books(sorted(self.held))
+            except MarketDataUnavailable as e:
+                self.log("held_check_skipped", reason=str(e))
+                books = {}
+            for s, o in list(self.held.items()):
+                b = books.get(s)
+                if b is None or not o.reached(b.ask):
+                    continue
+                del self.held[s]                               # one attempt: removed before anything is sent
+                held_orders.save(self.state_dir, self.held)
+                changed = False
+                self.log("held_order_triggered", symbol=s, strategy=o.strategy, trigger=o.trigger, ask=b.ask,
+                         limit=o.limit)
+                self._enter(o.intent(), now, entries_ok)
+        if changed:
+            held_orders.save(self.state_dir, self.held)
 
 
 # ---------------------------------------------------------------- the ledger after an entry

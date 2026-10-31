@@ -100,6 +100,11 @@ def evaluate(
         return Decision.reject(RejectCode.EXIT_PLAN, "exit plan needs stop < entry < take-profit")
     if intent.horizon_hours <= 0 or not intent.invalidation.strip():
         return Decision.reject(RejectCode.EXIT_PLAN, "exit plan needs a holding horizon and an invalidation condition")
+    if intent.trigger_price is not None:                     # an order placed in advance (H5)
+        trigger = floor_price(intent.trigger_price, rules.tick_size)
+        if not (stop < trigger <= entry) or intent.valid_until is None:
+            return Decision.reject(RejectCode.EXIT_PLAN,
+                                   "an order placed in advance needs stop < trigger <= its limit, and an expiry")
 
     # 5. Data quality (R-12, R-13)
     if market.data_age_s > r.max_data_age_s:

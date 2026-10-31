@@ -128,7 +128,7 @@ def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, S
         actions = []
         for intent in pending:                                    # 1. last close's ideas fill at this open
             r = sim.submit(intent, now)
-            result.outcomes["filled" if r.filled else
+            result.outcomes["filled" if r.filled else "advance order placed" if r.waiting else
                             ("not filled" if r.decision.accepted else r.decision.code.value)] += 1
         pending = []
         for s in symbols:                                         # 2. the candle itself
@@ -155,6 +155,9 @@ def run(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, S
             actions = strategy.manage(sim.data, close_ms / 1000, open_trades)
         pending = strategy.propose(sim.data, close_ms / 1000)
 
+    for k, v in sim.waiting_log.items():                         # orders placed in advance (H5) only
+        if k != "placed":
+            result.outcomes[f"advance order {k}"] += v
     result.trades = list(sim.trades)
     result.fills = list(sim.fills)
     result.mode_events = list(sim.modes.history)

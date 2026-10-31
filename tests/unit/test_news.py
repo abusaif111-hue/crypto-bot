@@ -181,7 +181,8 @@ def test_the_check_record_round_trips_and_a_damaged_one_trusts_nothing(tmp_path)
 def test_news_check_records_what_works(tmp_path):
     out = io.StringIO()
     http = fake_http({sources.SOURCES[0].url: (200, FED_FEED)})
-    assert cli._news_check(argparse.Namespace(news_dir=str(tmp_path)), http=http, out=out) == 0
+    # at the test's own time: the feed's "statement from the future" (31 Oct 2026) must stay in the future
+    assert cli._news_check(argparse.Namespace(news_dir=str(tmp_path)), http=http, out=out, now=NOW) == 0
     text = out.getvalue()
     assert "OK   Federal Reserve: monetary policy: 2 items kept" in text and "FAIL" in text
     assert sources.verified(tmp_path) == {sources.SOURCES[0].key}
