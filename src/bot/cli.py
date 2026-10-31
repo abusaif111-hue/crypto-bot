@@ -17,7 +17,7 @@
     bot live check | baseline | reconcile | start | run | status | pending | resume | block   (REAL money)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
-    bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b, H4)
+    bot backtest screen | fetch | baselines | run         (coin screen, history, baselines, strategies H1-H3, H2b, H4, H5)
     bot backtest h4-memory                                (once: H4 on four coins or BTC/ETH only, by measured memory)
     bot backtest holdout                                  (the one-time holdout test; Sultan only)
 
@@ -1601,9 +1601,9 @@ def _backtest_baselines(args: argparse.Namespace, out=None) -> int:
     return 0
 
 
-STRATEGIES = ("H1", "H2", "H3", "H2b", "H4")
+STRATEGIES = ("H1", "H2", "H3", "H2b", "H4", "H5")
 DEFAULT_RUN = ("H1", "H2", "H3", "H2b")       # H4 runs on its own: 1h candles and its own coins (docs/h4-plan.md)
-HOLDOUT_STRATEGIES = ("H1", "H2", "H3")      # H2b and H4 were designed after the holdout was seen
+HOLDOUT_STRATEGIES = ("H1", "H2", "H3")      # H2b, H4 and H5 were designed after the holdout was seen
 
 
 def _make_strategy(name: str, symbols: list[str]):
@@ -1612,9 +1612,10 @@ def _make_strategy(name: str, symbols: list[str]):
     from bot.strategies.h2b_blend import BlendedMomentum
     from bot.strategies.h3_mean_reversion import RangeMeanReversion
     from bot.strategies.h4_pullback import TrendPullback
+    from bot.strategies.h5_breakout import DailyBreakout
 
     return {"H1": TrendBreakout, "H2": TimeSeriesMomentum, "H3": RangeMeanReversion,
-            "H2b": BlendedMomentum, "H4": TrendPullback}[name](symbols)
+            "H2b": BlendedMomentum, "H4": TrendPullback, "H5": DailyBreakout}[name](symbols)
 
 
 def _backtest_run(args: argparse.Namespace, out=None) -> int:
@@ -1931,7 +1932,8 @@ def main(argv: list[str] | None = None) -> int:
     bb.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     br = bsub.add_parser("run", help="walk-forward and robustness tests of strategies H1-H3, H2b (research period)")
     br.add_argument("--strategy", nargs="+", choices=STRATEGIES, default=list(DEFAULT_RUN),
-                    help="default: H1 H2 H3 H2b; H4 runs alone, on the coins from bot backtest h4-memory")
+                    help="default: H1 H2 H3 H2b; H4 runs alone, on the coins from bot backtest h4-memory; "
+                         "H5 (docs/h5-plan.md) with --screened")
     br.add_argument("--random-runs", type=int, default=50, help="random-entry runs with the same exits")
     br.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     br.add_argument("--screened", action="store_true",

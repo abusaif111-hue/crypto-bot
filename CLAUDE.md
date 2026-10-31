@@ -119,6 +119,15 @@ bot paper status
    a candle takes about 940 bytes, so BTC 15m since 2019 (~273,000 candles) needs ~260 MB for prices alone.
    **Sultan paused the intraday research (25 Oct 2026)** rather than resize the server or shorten the period.
    Build nothing more for it and fetch no 15m data until he restarts it; the plan stays frozen as approved.
+   H5 (`docs/h5-plan.md`, approved by Sultan on 31 Oct 2026, frozen): a daily 20-day-high breakout with an order
+   placed in advance every day, one per coin (BTC, ETH, XRP, BNB; H2b's groups). `bot.strategies.h5_breakout`
+   (fixed values pinned by `tests/unit/test_h5.py`); `bot backtest run --strategy H5 --screened`, the selection
+   rule unchanged. Orders placed in advance: `TradeIntent.trigger_price`/`valid_until`; `evaluate()` refuses one
+   without stop < trigger <= limit and an expiry; in `SimExchange` a waiting order counts as open for every limit,
+   fills only once the price trades above the trigger (never above its limit) and then only through `submit()`
+   with a fresh `evaluate()`, expires, is replaced daily, and is cancelled when entries are blocked. Backtest only:
+   no runner or exchange order uses it yet; live H5 needs a passing backtest, 5 clean testnet round trips (OTOCO;
+   no stop-type working leg, no live H5), a forward test and Sultan's switch. Live trial capital 100 USDT (Sultan).
    H2c research protocol (`docs/h2c-plan.md`): stage A (the document only) approved by Sultan on 26 Oct 2026 and
    frozen at revision 7; never edit it (any change is a new exploratory experiment with its own document). Stage B
    is **not** approved: build no H2c code, run no coin screen, download no prices, select no coins and run no

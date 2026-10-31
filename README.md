@@ -685,6 +685,21 @@ root); open trades keep their stop-loss and take-profit on Binance. `live block`
 only. Removing `BOT_LIVE_CONFIRM` or setting `live_trading: false` stops the runner from starting
 again. Telegram alerts cover the live runner too.
 
+## H5: daily breakout with orders placed in advance (backtest stage)
+
+H5 (`docs/h5-plan.md`, approved 31 Oct 2026) places one buy order per coin every day at 00:00 UTC, for BTC,
+ETH, XRP and BNB: it buys only once the price trades above the highest high of the last 20 days, never more
+than 0.5% above that level, and the order lasts one day. Its stop is 2 daily ATRs below the level, its target
+3 times that distance; it sells on a daily close below the 10-day low or after 30 days. Every order is checked
+by the risk engine when it is placed, and again when it fills.
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot backtest run --strategy H5 --screened      # the backtest (an hour or more)
+```
+
+So far H5 exists only in the backtester. Real orders placed in advance on Binance come only after a passing
+backtest, 5 clean testnet trades and a forward test, and only when Sultan switches it on.
+
 ## How a trade is sized
 
 1. Entry is assumed to fill slightly worse than planned (0.05%), and the stop

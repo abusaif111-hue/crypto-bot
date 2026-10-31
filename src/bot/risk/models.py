@@ -46,6 +46,9 @@ class TradeIntent:
     strategy: str
     horizon_hours: int             # time stop
     invalidation: str              # plain-language condition that voids the trade
+    trigger_price: Decimal | None = None   # an order placed in advance (H5): buy only once the price trades
+                                           # above this; entry_price is then its limit. None: buy now
+    valid_until: float | None = None       # the waiting order's expiry (unix seconds); needed with a trigger
 
 
 @dataclass(frozen=True)

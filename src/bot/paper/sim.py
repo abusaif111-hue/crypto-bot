@@ -21,12 +21,23 @@ Fill model (see `bot.paper.fills`):
   a buy's fee from the coin received unless fees are paid in BNB: module 5
   must handle that (verify on testnet).
 
+Orders placed in advance (H5, docs/h5-plan.md): an intent with a `trigger_price` is checked by the risk
+engine when it is placed and then waits; it counts as an open position for every limit while it waits. Once
+the price trades above the trigger it is bought through `submit()`, so the risk engine checks it again on the
+account as it is then (a refusal means no fill). It fills at the trigger or the open if higher, never
+above its limit (a jump past the limit fills only if the price comes back to the limit), plus slippage and
+the fee. On the candle it fills, only the stop is checked (the order of prices inside a candle is unknown,
+so the cautious case is taken). It expires at `valid_until`, is replaced by a new order for the same coin,
+and every waiting order is cancelled as soon as entries are blocked. An intent without a trigger fills as
+before. Book-based fills (paper and forward runners) are not modelled for waiting orders yet.
+
 State is in memory only; a restart loses it.
 """
 from __future__ import annotations
 
 import time
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -34,7 +45,7 @@ from typing import Callable
 
 from bot.core.config import AppConfig
 from bot.core.ids import client_order_id, new_intent_id
-from bot.core.money import ZERO, D, fmt, pct
+from bot.core.money import ZERO, D, floor_price, fmt, pct
 from bot.exchange.filters import SymbolRules
 from bot.exchange.interface import Book, Candle, SpotReadVenue
 from bot.market.data import MarketDataService, MarketDataUnavailable
@@ -117,6 +128,23 @@ class EntryResult:
     filled: bool
     fill: Fill | None = None
     reason: str = ""
+    waiting: bool = False      # an order placed in advance was accepted and now waits
+
+
+@dataclass
+class Waiting:
+    """An order placed in advance: accepted by the risk engine, not filled yet."""
+    intent: TradeIntent
+    decision: Decision
+    trigger: Decimal
+    limit: Decimal
+    stop: Decimal
+    take_profit: Decimal
+    qty: Decimal
+    placed_at: float
+    valid_until: float
+    corr_group: str
+    triggered: bool = False
 
 
 def as_utc(t: float) -> datetime:
@@ -145,6 +173,8 @@ class SimExchange:
     index: EquityIndex = field(init=False, default_factory=EquityIndex)
     periods: PeriodTracker = field(init=False, default_factory=PeriodTracker)
     _bids: dict[str, Decimal] = field(init=False, default_factory=dict, repr=False)
+    waiting: dict[str, Waiting] = field(init=False, default_factory=dict)
+    waiting_log: Counter = field(init=False, default_factory=Counter)   # placed / filled / expired / cancelled
 
     def __post_init__(self) -> None:
         if D(self.starting_quote) <= 0:
@@ -213,6 +243,10 @@ class SimExchange:
             OpenPosition(symbol=p.symbol, qty=p.qty, avg_entry=p.entry_price, stop_price=p.stop_price,
                          current_bid=self._bids[p.symbol], corr_group=p.corr_group)
             for p in self.positions.values()
+        ) + tuple(
+            OpenPosition(symbol=w.intent.symbol, qty=w.qty, avg_entry=w.limit, stop_price=w.stop,
+                         current_bid=w.limit, corr_group=w.corr_group)
+            for w in self.waiting.values() if w.intent.symbol not in self.positions
         )
         return AccountState(
             mode=mode, equity=equity, free_quote=self.quote,
@@ -233,6 +267,9 @@ class SimExchange:
         if "week" in events:
             self.modes.on_week_rollover(state)
         self.modes.on_state(state, as_utc(now))
+        if self.waiting and not (self.modes.mode is Mode.RUNNING and self.modes.entries_allowed):
+            self.waiting_log["cancelled (entries blocked)"] += len(self.waiting)
+            self.waiting.clear()
         return self._state(equity)
 
     def resume(self, operator: str, reason: str, now: float | None = None) -> None:
@@ -241,8 +278,11 @@ class SimExchange:
         self.modes.resume(operator, reason, self.account_state(now), as_utc(now))
 
     # ------------------------------------------------------------ entries
-    def submit(self, intent: TradeIntent, now: float | None = None) -> EntryResult:
-        """The only way to open a simulated position. Every intent goes through evaluate()."""
+    def submit(self, intent: TradeIntent, now: float | None = None, *,
+               _triggered_at: Decimal | None = None) -> EntryResult:
+        """The only way to open a simulated position. Every intent goes through evaluate(). `_triggered_at` is
+        used only by this simulator, for an order placed in advance whose trigger was reached: it fills at that
+        price instead of the ask, after the same fresh risk check."""
         now = self.clock() if now is None else now
         try:
             if self.positions:
@@ -252,21 +292,43 @@ class SimExchange:
         except MarketDataUnavailable as e:
             d = Decision.reject(RejectCode.STALE_DATA, f"market data unavailable: {e}")
             return EntryResult(d, False, reason=d.reason)
+        if intent.trigger_price is not None:
+            self._expire_waiting(now)
+            if self.waiting.pop(intent.symbol, None) is not None:       # one order per coin: the new one replaces it
+                self.waiting_log["replaced"] += 1
         state = self.account_state(now)
         decision = evaluate(intent, state, snapshot, rules, self.cfg, self._group(intent.symbol))
         if not decision.accepted:
             return EntryResult(decision, False, reason=decision.reason)
-        return self._open_position(intent, decision, snapshot, rules, now)
+        if intent.trigger_price is not None:
+            return self._place_waiting(intent, decision, rules, now)
+        return self._open_position(intent, decision, snapshot, rules, now, _triggered_at)
+
+    def _place_waiting(self, intent: TradeIntent, decision: Decision, rules: SymbolRules, now: float) -> EntryResult:
+        trigger = floor_price(intent.trigger_price, rules.tick_size)          # as evaluate() checked it
+        self.waiting[intent.symbol] = Waiting(
+            intent, decision, trigger, D(decision.details["entry"]), D(decision.details["stop"]),
+            D(decision.details["take_profit"]), decision.qty, now, float(intent.valid_until),
+            self._group(intent.symbol))
+        self.waiting_log["placed"] += 1
+        return EntryResult(decision, False, reason=f"waiting: buy {fmt(decision.qty)} {intent.symbol} once the price "
+                                                  f"trades above {fmt(trigger)}", waiting=True)
+
+    def _expire_waiting(self, now: float) -> None:
+        for s in [s for s, w in self.waiting.items() if now >= w.valid_until]:
+            del self.waiting[s]
+            self.waiting_log["expired"] += 1
 
     def _open_position(self, intent: TradeIntent, decision: Decision, snapshot: MarketSnapshot,
-                       rules: SymbolRules, now: float) -> EntryResult:
+                       rules: SymbolRules, now: float, triggered_at: Decimal | None = None) -> EntryResult:
         entry = D(decision.details["entry"])
         stop = D(decision.details["stop"])
         take_profit = D(decision.details["take_profit"])
         qty = decision.qty
         worst_entry = entry * (1 + pct(self.cfg.risk.entry_slippage_pct))   # what the risk engine sized for
-        price = fills.buy_fill_price(snapshot.best_ask, self._entry_slippage())
-        if snapshot.best_ask <= stop:
+        ask = snapshot.best_ask if triggered_at is None else triggered_at
+        price = fills.buy_fill_price(ask, self._entry_slippage())
+        if ask <= stop:
             return EntryResult(decision, False, reason="not filled: the ask is already at or below the stop")
         if price > worst_entry:
             return EntryResult(decision, False,
@@ -278,7 +340,7 @@ class SimExchange:
         intent_id = new_intent_id()
         self.quote -= qty * price + fee
         fill = Fill(client_order_id(intent_id, "entry"), intent.symbol, "BUY", "ENTRY", qty, price, fee, now,
-                    slippage=qty * (price - snapshot.best_ask))
+                    slippage=qty * (price - ask))
         self.fills.append(fill)
         self.positions[intent.symbol] = SimPosition(
             intent_id=intent_id, symbol=intent.symbol, base_asset=rules.base_asset, strategy=intent.strategy,
@@ -286,7 +348,7 @@ class SimExchange:
             planned_risk=decision.planned_risk, opened_at=now, expires_at=now + intent.horizon_hours * 3600,
             corr_group=self._group(intent.symbol),
         )
-        self._bids[intent.symbol] = snapshot.best_bid
+        self._bids[intent.symbol] = snapshot.best_bid if triggered_at is None else triggered_at
         self.account_state(now)
         return EntryResult(decision, True, fill, reason=f"filled {fmt(qty)} {intent.symbol} at {fmt(price)}")
 
@@ -339,6 +401,11 @@ class SimExchange:
         if not candle.closed:
             return None
         now = candle.close_time / 1000
+        if symbol in self.waiting and symbol not in self.positions:
+            trade = self._waiting_candle(symbol, candle)
+            if trade is not None or symbol in self.positions:
+                self._mark_quietly(now)
+                return trade
         pos = self.positions.get(symbol)
         if pos is None or candle.open_time < pos.opened_at * 1000:
             if pos is not None:
@@ -352,6 +419,39 @@ class SimExchange:
         trade = self._close(pos, hit[0], hit[1], now) if hit else None
         self._mark_quietly(now)
         return trade
+
+    def _waiting_candle(self, symbol: str, candle: Candle) -> ClosedTrade | None:
+        """A waiting order against one finished candle: expire it, leave it, or fill it (then the stop only)."""
+        w = self.waiting[symbol]
+        start = candle.open_time / 1000
+        if start < w.placed_at:
+            return None                                  # the candle began before the order existed
+        if start >= w.valid_until:
+            del self.waiting[symbol]
+            self.waiting_log["expired"] += 1
+            return None
+        if not w.triggered and candle.high > w.trigger:  # must trade above the trigger to be sure
+            w.triggered = True
+        if not w.triggered:
+            return None
+        ref = max(candle.open, w.trigger)
+        if ref > w.limit:                                # jumped past the limit: fills only back at the limit
+            if candle.low > w.limit:
+                return None
+            ref = w.limit
+        del self.waiting[symbol]                         # it no longer waits: not counted twice below
+        fill_intent = replace(w.intent, trigger_price=None, valid_until=None)
+        r = self.submit(fill_intent, start, _triggered_at=ref)  # a fresh risk check on the account as it is now
+        if not r.filled:
+            why = r.decision.code.value if not r.decision.accepted else "price or cash"
+            self.waiting_log[f"not filled at the trigger ({why})"] += 1
+            return None
+        self.waiting_log["filled"] += 1
+        pos = self.positions[symbol]
+        self._bids[symbol] = candle.close
+        if candle.low <= pos.stop_price:                 # the order inside the candle is unknown: the cautious case
+            return self._close(pos, fills.STOP_LOSS, pos.stop_price, candle.close_time / 1000)
+        return None
 
     def _on_bid(self, symbol: str, bid: Decimal, now: float) -> ClosedTrade | None:
         pos = self.positions.get(symbol)
