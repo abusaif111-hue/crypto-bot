@@ -577,6 +577,11 @@ breaker, equity against what it started with, drawdown, open trades with their s
 closed trades, and recent activity. It refreshes itself every minute and flags a runner that has gone
 silent.
 
+For every account it also shows each strategy's progress (H2b, H5: open, closed and refused trades;
+wins and P&L for paper and the forward test, which record them per trade) and, where H5 is switched
+on, the orders the bot holds for it: the level each coin must trade above, its limit, stop, target and
+until when.
+
 It only reads the runners' files: it imports nothing that trades, never talks to Binance and never
 reads `.env`. It answers GET only and listens on `127.0.0.1:8050`, so it is never on the internet; you
 open it from your own computer through an SSH tunnel.

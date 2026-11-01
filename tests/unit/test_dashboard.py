@@ -134,3 +134,66 @@ def test_drawdown_comes_from_the_saved_index_when_the_status_has_none(home):
     paper_state["index"] = {"value_per_unit": "1.1", "peak_value_per_unit": "1.1"}
     (home / "paper" / db.STATE).write_text(json.dumps(paper_state))
     assert db.read_all(home)[3].drawdown_pct == 0
+
+
+# ---------------------------------------------------------------- strategies and H5's held orders
+def with_strategies(home):
+    live = home / "live"
+    (live / db.LEDGER).write_text(json.dumps({"trades": [
+        {"symbol": "BTCUSDT", "status": "OPEN", "strategy": "H2b", "received_qty": "0.0012", "entry_price": "80000",
+         "stop_price": "74000", "take_profit_price": "98000", "created_at": NOW - 60},
+        {"symbol": "ETHUSDT", "status": "CLOSED", "strategy": "H5"},
+        {"symbol": "XRPUSDT", "status": "NOT_OPENED", "strategy": "H5"},
+        {"symbol": "BNBUSDT", "status": "CLOSED", "strategy": "H2b"}]}))
+    (live / db.H5).write_text(json.dumps({"enabled_by": "Sultan", "enabled_at": NOW, "capital": "100"}))
+    (live / db.HELD).write_text(json.dumps([
+        {"symbol": "ETHUSDT", "strategy": "H5", "trigger": "2400", "limit": "2412", "stop": "2250", "target": "2850",
+         "horizon_hours": 720, "invalidation": "x", "placed_at": NOW - 3600, "valid_until": 1_792_886_400.0}]))
+    paper = home / "paper"
+    (paper / db.STATE).write_text(json.dumps({
+        "starting_quote": "10000", "modes": {"mode": "RUNNING", "active_breaches": []},
+        "positions": [{"symbol": "BTCUSDT", "strategy": "H2b", "qty": "0.0096", "entry_price": "81754.87",
+                       "stop_price": "80000", "take_profit_price": "87000", "opened_at": NOW - 86400}],
+        "trades": [{"strategy": "H2b", "pnl": "-1.5"}, {"strategy": "H2b", "pnl": "4.0"},
+                   {"strategy": "H5", "pnl": "2"}]}))
+    return home
+
+
+def test_each_strategys_progress_per_account(home):
+    live, _, _, paper = db.read_all(with_strategies(home))
+    assert live.strategies == {"H2b": {"open": 1, "closed": 1, "not_opened": 0, "wins": None, "pnl": None},
+                               "H5": {"open": 0, "closed": 1, "not_opened": 1, "wins": None, "pnl": None}}
+    assert paper.strategies["H2b"] == {"open": 1, "closed": 2, "not_opened": 0, "wins": 1, "pnl": Dec("2.5")}
+    assert paper.strategies["H5"]["pnl"] == Dec("2") and paper.strategies["H5"]["wins"] == 1
+
+
+def test_the_held_orders_and_h5s_capital_are_shown(home):
+    live = db.read_all(with_strategies(home))[0]
+    assert live.h5_capital == Dec("100") and [o["symbol"] for o in live.held] == ["ETHUSDT"]
+    page = db.render(db.read_all(home), NOW)
+    for part in ("H5: orders the bot holds", "Sized on at most 100.00 USDT", "Buy above", "2,400.00", "2,412.00",
+                 "2026-10-25 00:00 UTC", "<th>Strategy</th>", "P&amp;L USDT",
+                 "Profit per trade is not recorded for this account"):
+        assert part in page, part
+
+
+def test_no_h5_section_where_h5_is_off_and_an_empty_day_is_explained(home):
+    page = db.render(db.read_all(home), NOW)
+    assert "H5: orders the bot holds" not in page
+    (home / "live" / db.H5).write_text(json.dumps({"capital": "100"}))
+    page = db.render(db.read_all(home), NOW)
+    assert "No orders held right now" in page
+
+
+def test_a_held_order_from_the_file_is_escaped(home):
+    (home / "live" / db.HELD).write_text(json.dumps([{"symbol": "<script>x</script>", "strategy": "H5"}]))
+    (home / "live" / db.H5).write_text(json.dumps({"capital": "100"}))
+    page = db.render(db.read_all(home), NOW)
+    assert "<script>x" not in page and "&lt;script&gt;" in page
+
+
+def test_held_order_events_show_in_recent_activity(home):
+    jl(home / "live" / db.JOURNAL, {"at": NOW - 10, "event": "held_order_triggered", "symbol": "ETHUSDT",
+                                     "strategy": "H5"})
+    live = db.read_all(home)[0]
+    assert live.recent[0]["event"] == "held_order_triggered"

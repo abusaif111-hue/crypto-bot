@@ -3,6 +3,9 @@
 It reads the files the runners already write (account, ledger, saved state and journal of the live
 runner, the testnet runner, the H2b forward test and paper trading) and shows each one's mode,
 breakers, equity, open trades and recent activity. It refreshes itself every minute.
+For each account it also shows every strategy's progress (open, closed and refused trades; wins and P&L
+where the account records them per trade) and, where H5 is switched on, the orders the bot holds for it
+(`held-orders.json`: the level each coin must trade above, its limit, stop, target and expiry).
 
 Read-only and private by design:
 - it imports nothing from `bot` and never talks to Binance, so it cannot place, change or cancel
@@ -28,6 +31,7 @@ from typing import Any
 SOURCES = (("live", "live", "REAL money"), ("testnet", "testnet", "testnet money"),
            ("forward", "forward-h2b", "simulated"), ("paper", "paper", "simulated"))
 JOURNAL, ACCOUNT, LEDGER, STATE = "journal.jsonl", "account.json", "ledger.json", "state.json"
+HELD, H5 = "held-orders.json", "h5.json"           # bot.execution.held (read as plain JSON; nothing imported)
 TAIL_BYTES = 262_144                   # the end of each journal is enough for the page
 SILENT_S = 2400                        # no journal line for 40 minutes: the runner may be down
 RECENT = 12
@@ -38,7 +42,8 @@ NOTABLE = {
     "entry_unprotected", "entry_unknown", "entry_blocked", "trade_closed", "unprotected",
     "reconciliation_mismatch", "exit_failed", "breaker", "mode_changed", "fault_cleared", "entries_paused",
     "entries_unpaused", "strategy_error", "decisions_missed", "mark_failed", "market_data_down",
-    "market_data_back", "resume_refused",
+    "market_data_back", "resume_refused", "entry_rejected", "entry_not_filled", "held_order_placed",
+    "held_order_triggered", "held_order_expired", "held_order_cancelled", "held_order_skipped", "exit_waiting",
 }
 BAD = {"entry_emergency_exit", "entry_unprotected", "entry_unknown", "unprotected", "reconciliation_mismatch",
        "exit_failed", "breaker"}
@@ -61,6 +66,9 @@ class Account:
     closed_pnl: Decimal | None = None
     recent: list[dict[str, Any]] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
+    strategies: dict[str, dict[str, Any]] = field(default_factory=dict)   # name -> open, closed, ... pnl
+    held: list[dict[str, Any]] = field(default_factory=list)              # orders the bot holds (H5)
+    h5_capital: Decimal | None = None                                     # H5 switched on, sized on at most this
 
 
 def _d(v: Any) -> Decimal | None:
@@ -108,6 +116,12 @@ def _index_drawdown(saved: dict[str, Any]) -> Decimal | None:
     return max(Decimal(0), (1 - value / peak) * 100)
 
 
+def _strategy(acct: Account, name: Any) -> dict[str, Any]:
+    """The progress row for one strategy (wins and P&L stay None where the account does not record them)."""
+    return acct.strategies.setdefault(str(name or "?"), {"open": 0, "closed": 0, "not_opened": 0,
+                                                         "wins": None, "pnl": None})
+
+
 def read_account(home: Path, name: str, folder: str, money: str) -> Account:
     """Everything the page shows about one runner, from its files. Never raises for a bad file."""
     d = Path(home) / folder
@@ -135,13 +149,22 @@ def read_account(home: Path, name: str, folder: str, money: str) -> Account:
             acct.drawdown_pct = _index_drawdown(account)
         ledger = _json(d / LEDGER, acct) or {}
         for t in ledger.get("trades", []):
+            row = _strategy(acct, t.get("strategy"))
+            row[{"OPEN": "open", "PENDING": "open", "CLOSED": "closed"}.get(t.get("status"), "not_opened")] += 1
             if t.get("status") in ("OPEN", "PENDING"):
                 acct.open_trades.append({"symbol": t.get("symbol"), "status": t.get("status"),
+                                         "strategy": t.get("strategy"),
                                          "qty": t.get("received_qty"), "entry": t.get("entry_price"),
                                          "stop": t.get("stop_price"), "target": t.get("take_profit_price"),
                                          "since": t.get("created_at")})
             elif t.get("status") == "CLOSED":
                 acct.closed += 1
+        h5 = _json(d / H5, acct)
+        if isinstance(h5, dict):
+            acct.h5_capital = _d(h5.get("capital"))
+        held = _json(d / HELD, acct)
+        if isinstance(held, list):
+            acct.held = [o for o in held if isinstance(o, dict)]
         return acct
     state = _json(d / STATE, acct)
     if isinstance(state, dict):                              # a simulated account (paper, forward test)
@@ -152,11 +175,19 @@ def read_account(home: Path, name: str, folder: str, money: str) -> Account:
         if acct.drawdown_pct is None:                        # the paper runner's status line has no drawdown
             acct.drawdown_pct = _index_drawdown(state)
         for p in state.get("positions", []):
+            _strategy(acct, p.get("strategy"))["open"] += 1
             acct.open_trades.append({"symbol": p.get("symbol"), "status": "OPEN", "qty": p.get("qty"),
+                                     "strategy": p.get("strategy"),
                                      "entry": p.get("entry_price"), "stop": p.get("stop_price"),
                                      "target": p.get("take_profit_price"), "since": p.get("opened_at")})
         trades = state.get("trades", [])
         acct.closed = len(trades)
+        for t in trades:
+            row, pnl = _strategy(acct, t.get("strategy")), _d(t.get("pnl"))
+            row["closed"] += 1
+            if pnl is not None:
+                row["pnl"] = (row["pnl"] or Decimal(0)) + pnl
+                row["wins"] = (row["wins"] or 0) + (1 if pnl > 0 else 0)
         pnls = [_d(t.get("pnl")) for t in trades]
         acct.closed_pnl = sum((p for p in pnls if p is not None), Decimal(0)) if trades else None
     return acct
@@ -211,10 +242,12 @@ def _card(a: Account, now: float) -> str:
         cls = "pos" if diff > 0 else "neg" if diff < 0 else ""
         change = f' <span class="{cls}">({diff:+,.2f}, {diff / a.started_with * 100:+.2f}%)</span>'
     rows = "".join(
-        f"<tr><td>{_e(t['symbol'])}</td><td>{_e(t['status'])}</td><td class=n>{_e(_num(t['qty']))}</td>"
+        f"<tr><td>{_e(t['symbol'])}</td><td>{_e(t.get('strategy') or '?')}</td><td>{_e(t['status'])}</td>"
+        f"<td class=n>{_e(_num(t['qty']))}</td>"
         f"<td class=n>{_e(_num(t['entry']))}</td><td class=n>{_e(_num(t['stop']))}</td>"
         f"<td class=n>{_e(_num(t['target']))}</td><td>{_e(_when(t['since'], now))}</td></tr>" for t in a.open_trades)
-    trades = (f'<table><tr><th>Coin</th><th>Status</th><th class=n>Qty</th><th class=n>Bought</th><th class=n>Stop</th>'
+    trades = (f'<table><tr><th>Coin</th><th>Strategy</th><th>Status</th><th class=n>Qty</th>'
+              f'<th class=n>Bought</th><th class=n>Stop</th>'
               f'<th class=n>Target</th><th>Since</th></tr>{rows}</table>' if a.open_trades
               else '<p class="muted">No open trades.</p>')
     recent = "".join(
@@ -230,9 +263,49 @@ def _card(a: Account, now: float) -> str:
 <p>Mode <span class="pill {mode_cls}">{_e(a.mode)}</span>{breaches} · started with {_e(_money(a.started_with))} USDT
  · drawdown {_e(_num(a.drawdown_pct)) if a.drawdown_pct is not None else "—"}% · {a.closed} closed trades{pnl}</p>
 <p class="muted">Equity as of {_e(_when(a.status_at, now))}</p>
-<h3>Open trades</h3>{trades}
+<h3>Strategies</h3>{_strategies(a)}
+{_held(a)}<h3>Open trades</h3>{trades}
 <h3>Recent activity</h3><ul>{recent}</ul>
 </section>"""
+
+
+def _strategies(a: Account) -> str:
+    if not a.strategies:
+        return '<p class="muted">No trades yet.</p>'
+    rows = "".join(
+        f"<tr><td>{_e(n)}</td><td class=n>{r['open']}</td><td class=n>{r['closed']}</td>"
+        f"<td class=n>{r['not_opened']}</td>"
+        f"<td class=n>{'—' if r['wins'] is None else r['wins']}</td>"
+        f"<td class=n>{_e(_money(r['pnl']))}</td></tr>" for n, r in sorted(a.strategies.items()))
+    note = ("" if any(r["pnl"] is not None for r in a.strategies.values()) else
+            '<p class="muted">Profit per trade is not recorded for this account; its equity above is the total.</p>')
+    return (f"<table><tr><th>Strategy</th><th class=n>Open</th><th class=n>Closed</th><th class=n>Not opened</th>"
+            f"<th class=n>Wins</th><th class=n>P&amp;L USDT</th></tr>{rows}</table>{note}")
+
+
+def _held(a: Account) -> str:
+    if a.h5_capital is None and not a.held:
+        return ""
+    head = (f'<h3>H5: orders the bot holds <span class="pill ok">on</span></h3><p class="muted">Sized on at most '
+            f"{_e(_money(a.h5_capital))} USDT. Each order buys only once the price trades above its level, never above "
+            f"its limit, with the stop-loss and take-profit attached; one attempt; it expires at the time shown.</p>")
+    if not a.held:
+        return head + '<p class="muted">No orders held right now (they are set after each 00:00 UTC daily close).</p>'
+    rows = "".join(
+        f"<tr><td>{_e(o.get('symbol'))}</td><td>{_e(o.get('strategy'))}</td>"
+        f"<td class=n>{_e(_num(o.get('trigger')))}</td>"
+        f"<td class=n>{_e(_num(o.get('limit')))}</td><td class=n>{_e(_num(o.get('stop')))}</td>"
+        f"<td class=n>{_e(_num(o.get('target')))}</td><td>{_e(_until(o.get('valid_until')))}</td></tr>"
+        for o in a.held)
+    return (head + f"<table><tr><th>Coin</th><th>Strategy</th><th class=n>Buy above</th><th class=n>At most</th>"
+            f"<th class=n>Stop</th><th class=n>Target</th><th>Until</th></tr>{rows}</table>")
+
+
+def _until(t: Any) -> str:
+    try:
+        return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(float(t)))
+    except (TypeError, ValueError):
+        return "—"
 
 
 REPORT = Path("reports") / "latest.md"
