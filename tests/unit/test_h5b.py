@@ -331,3 +331,12 @@ def test_h5b_code_never_opens_the_holdout():
         assert bad not in names, bad
     mods = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
     assert not any(m.startswith(("bot.execution", "bot.exchange.trading")) for m in mods)
+
+
+def test_the_command_reads_the_memory_figure_when_it_runs(tmp_path, monkeypatch):
+    """The coin check must use the memory available at the time it runs (and a test's stand-in for it)."""
+    with_universe(tmp_path)
+    monkeypatch.setattr(h5b_coins, "available_memory_mb", lambda: 10)
+    args = argparse.Namespace(config="config/default.yaml", data_dir=str(tmp_path), operator="Sultan")
+    assert cli._backtest_h5b_coins(args, make_exchange=lambda **k: coin_world(), out=io.StringIO()) == 0
+    assert h5b_coins.load(tmp_path)["left_out_for_memory"] == ["DOGEUSDT", "SOLUSDT"]   # least traded first
