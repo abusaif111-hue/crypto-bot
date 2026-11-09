@@ -133,15 +133,17 @@ def correlation(a: list[Decimal], b: list[Decimal]) -> Decimal | None:
     return cov / (va.sqrt() * vb.sqrt()) if va > 0 and vb > 0 else None
 
 
-def assess(symbol: str, daily: list[Candle], btc_daily: list[Candle], cfg: AppConfig) -> CoinResult:
-    """Apply the screen to one coin's daily candles (research data only)."""
+def assess(symbol: str, daily: list[Candle], btc_daily: list[Candle], cfg: AppConfig,
+           listed_by: int = LISTED_BY_MS) -> CoinResult:
+    """Apply the screen to one coin's daily candles (research data only). `listed_by` is the listing rule
+    (2019-10-01 for this screen; H5b's coin check, docs/h5b-plan.md, passes its own)."""
     res = CoinResult(symbol)
     if not daily:
         res.failures.append("no history")
         return res
     res.first_candle = datetime.fromtimestamp(daily[0].open_time / 1000, timezone.utc).strftime("%Y-%m-%d")
-    if daily[0].open_time > LISTED_BY_MS:
-        res.failures.append(f"listed after {datetime.fromtimestamp(LISTED_BY_MS / 1000, timezone.utc):%Y-%m-%d}")
+    if daily[0].open_time > listed_by:
+        res.failures.append(f"listed after {datetime.fromtimestamp(listed_by / 1000, timezone.utc):%Y-%m-%d}")
         return res
     # 30-day volatility, computed with the 30 days before the window as lead-in
     def vols(cs: list[Candle]) -> dict[int, Decimal]:

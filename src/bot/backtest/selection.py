@@ -11,6 +11,8 @@ Also required (design package, "Robustness" and "Baselines"):
 6. no setting moved by 20% makes the result collapse (expectancy turns negative or
    falls below half);
 7. the strategy beats random entries with the same exits (above their 95th percentile).
+For a strategy that adds coins to one that passed (H5b, docs/h5b-plan.md), one more:
+8. the new coins earn their place: out of sample, with doubled costs, their trades together make money.
 The holdout was step 3 and is spent (H2 used it), so the verdict is at most "passes
 walk-forward"; the next test is a forward test on new prices, if Sultan approves one
 (docs/h2b-plan.md). The best return is never a criterion.
@@ -72,6 +74,8 @@ class StrategyEvaluation:
     by_coin: dict[str, Decimal]
     by_month: dict[str, Decimal]
     checks: list[Check] = field(default_factory=list)
+    new_coins: tuple[str, ...] = ()                       # check 8 runs only when set (H5b)
+    oos_doubled_by_coin: dict[str, Decimal] = field(default_factory=dict)
 
     @property
     def passes_walk_forward(self) -> bool:
@@ -84,12 +88,15 @@ def _expectancy(trades: list[ClosedTrade]) -> Decimal | None:
 
 def evaluate(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, SymbolRules], cfg: AppConfig,
              cost: CostModel = CostModel(), random_runs: int = 50, progress=None,
-             ws: list[Window] | None = None, corr_groups: dict[str, str] | None = None) -> StrategyEvaluation:
+             ws: list[Window] | None = None, corr_groups: dict[str, str] | None = None,
+             new_coins: list[str] | None = None) -> StrategyEvaluation:
     say = progress or (lambda msg: None)
     wf = walk_forward(strategy, candles, rules, cfg, cost, progress=say, ws=ws, corr_groups=corr_groups)
     oos = [t for r in wf for t in r.edge.trades]
     oos_dbl = [t for r in wf for t in r.edge_doubled.trades]
-    by_coin, by_month = defaultdict(lambda: ZERO), defaultdict(lambda: ZERO)
+    by_coin, by_month, dbl_by_coin = defaultdict(lambda: ZERO), defaultdict(lambda: ZERO), defaultdict(lambda: ZERO)
+    for t in oos_dbl:
+        dbl_by_coin[t.symbol] += t.pnl
     for t in oos:
         by_coin[t.symbol] += t.pnl
         by_month[datetime.fromtimestamp(t.closed_at, timezone.utc).strftime("%Y-%m")] += t.pnl
@@ -120,7 +127,8 @@ def evaluate(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[s
         full_edge=metrics_of(full_edge_res), full_deployed=metrics_of(full_dep_res),
         full_deployed_halt_ms=full_dep_res.drawdown_halt_ms, full_drawdown_events=len(full_edge_res.drawdown_events),
         sensitivity=sensitivity, per_coin=per_coin, regimes=regime_breakdown(full_edge_res.trades, candles),
-        random_expectancies=rand, by_coin=dict(by_coin), by_month=dict(sorted(by_month.items())))
+        random_expectancies=rand, by_coin=dict(by_coin), by_month=dict(sorted(by_month.items())),
+        new_coins=tuple(new_coins or ()), oos_doubled_by_coin=dict(dbl_by_coin))
     ev.checks = checks(ev, cfg)
     return ev
 
@@ -168,6 +176,12 @@ def checks(ev: StrategyEvaluation, cfg: AppConfig) -> list[Check]:
                          f"{_usdt(base)} vs random 95th percentile {_usdt(p95)} per trade"))
     else:
         out.append(Check("Beats random entries with the same exits (95th percentile)", False, "not enough trades"))
+    if ev.new_coins:
+        traded = [s for s in ev.new_coins if s in ev.oos_doubled_by_coin]
+        new_pnl = sum((ev.oos_doubled_by_coin[s] for s in traded), ZERO)
+        each = ", ".join(f"{s} {_usdt(ev.oos_doubled_by_coin[s])}" for s in traded)
+        out.append(Check("The new coins earn their place (out of sample, doubled costs)", bool(traded) and new_pnl > 0,
+                         f"{_usdt(new_pnl)} together ({each})" if traded else "no trades on the new coins"))
     return out
 
 
@@ -279,4 +293,6 @@ def summary(ev: StrategyEvaluation) -> dict[str, Any]:
         "per_coin": {k: m(v) for k, v in ev.per_coin.items()},
         "regimes": {k: {"trades": n, "expectancy": str(e)} for k, (n, e) in ev.regimes.items()},
         "random_expectancies": [str(x) for x in ev.random_expectancies],
+        "new_coins": list(ev.new_coins),
+        "oos_doubled_by_coin": {k: str(v) for k, v in ev.oos_doubled_by_coin.items()},
     }

@@ -1,8 +1,8 @@
 # H5b plan: H5's daily breakout on more coins
 
-Status: **DRAFT, written 9 Nov 2026, waiting for Sultan's approval (section 8).** Written before
-any price of the new coins was looked at. Once approved, this document is frozen: changing a coin
-rule, a setting or a pass rule after that makes it a new strategy.
+Status: **APPROVED by Sultan on 9 Nov 2026 (decisions 1, 2 and 3 in section 8). Frozen.** Written
+before any price of the new coins was looked at. Changing a coin rule, a setting or a pass rule
+after this makes it a new strategy.
 
 ## 1. Why H5b
 
@@ -130,7 +130,7 @@ Sultan wants one.
    the H2b forward report replay exactly as before (tested).
 4. The runner switch (`h5b-enable`) is built only after a pass and Sultan's approval.
 
-## 8. Decisions for Sultan
+## 8. Decisions for Sultan (all three approved on 9 Nov 2026)
 
 1. **The candidates and coin rules** in section 3 (including leaving out coins that fail them).
 2. **The pass rules** in section 4: H5's 7 checks unchanged, plus check 8.
