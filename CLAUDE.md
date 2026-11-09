@@ -145,6 +145,10 @@ bot paper status
    H5b` runs alone with H5's 7 checks plus check 8 (the new coins' out-of-sample P&L with doubled costs is
    positive). A failure drops H5b (not tuned or re-run) and H5 carries on. A pass leads to testnet, then H5b
    replaces H5 on live only by Sultan's switch (not built yet). Never change `h5_breakout.py` for H5b.
+   **H5b is dropped (coin check, 9 Nov 2026, `~/backtest-data/h5b-coins.json`): no candidate passed** (SOL and DOGE
+   too volatile, SOL also a 74% fall; TRX and ZEC too little volume, ZEC also too volatile; HYPE 4h history only
+   from 2026-09-24; XMR not trading on Binance Spot). Per the plan there is no backtest; never re-run the check or
+   change its rules or candidates to get a coin in (that would be a new strategy with its own plan).
    H2c research protocol (`docs/h2c-plan.md`): stage A (the document only) approved by Sultan on 26 Oct 2026 and
    frozen at revision 7; never edit it (any change is a new exploratory experiment with its own document). Stage B
    is **not** approved: build no H2c code, run no coin screen, download no prices, select no coins and run no
