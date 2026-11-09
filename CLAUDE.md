@@ -145,6 +145,21 @@ bot paper status
    H5b` runs alone with H5's 7 checks plus check 8 (the new coins' out-of-sample P&L with doubled costs is
    positive). A failure drops H5b (not tuned or re-run) and H5 carries on. A pass leads to testnet, then H5b
    replaces H5 on live only by Sultan's switch (not built yet). Never change `h5_breakout.py` for H5b.
+   **H5b is dropped (coin check, 9 Nov 2026, `~/backtest-data/h5b-coins.json`): no candidate passed** (SOL and DOGE
+   too volatile, SOL also a 74% fall; TRX and ZEC too little volume, ZEC also too volatile; HYPE 4h history only
+   from 2026-09-24; XMR not trading on Binance Spot). Per the plan there is no backtest; never re-run the check or
+   change its rules or candidates to get a coin in (that would be a new strategy with its own plan).
+   H6 (`docs/h6-plan.md`, approved by Sultan on 9 Nov 2026 with all coins, frozen): weekly rotation into the top 2
+   coins in an uptrend (close above the `trend_days` average; ranked by `lookback_days` return) at the first 4h close
+   after Monday 00:00 UTC; stop 2.5 x daily ATR(20), 3R target, 35-day time stop. `bot.strategies.h6_rotation`
+   (fixed values pinned by `tests/unit/test_h6.py`). Coins: BTC, ETH, XRP, BNB plus SOL, DOGE, TRX, ZEC (Sultan's
+   decision 1 waives the stability/liquidity screen for these four; R-11 still refuses thin days at order time;
+   their stop slippage allowance is 2.0%, which only tightens sizing). `bot backtest h6-coins` (`bot.backtest.h6_coins`,
+   rules 1-2 and measured groups, written once to `h6-coins.json`, never re-run); `bot backtest fetch --h6` (up to
+   2025-10-01); `bot backtest run --strategy H6` alone: H5's checks with random entries at the 99th percentile,
+   check 8 on the four extra coins, and check 9 (beats equal-weight holding of the same coins in return AND worst
+   window drawdown). A failure drops H6 (not tuned or re-run). A pass leads to testnet, then live only by Sultan's
+   switch and capital (not built). Never lower the extra coins' 2.0% allowance.
    H2c research protocol (`docs/h2c-plan.md`): stage A (the document only) approved by Sultan on 26 Oct 2026 and
    frozen at revision 7; never edit it (any change is a new exploratory experiment with its own document). Stage B
    is **not** approved: build no H2c code, run no coin screen, download no prices, select no coins and run no

@@ -58,6 +58,8 @@ RESEARCH = (
     ("H5 daily breakout (orders held in advance)",
      "full research period 202 trades, +9.13 USDT per trade, above random entries (95th percentile +5.83)",
      "passed walk-forward (31 Oct 2026); next: held orders on the testnet, then live with 100 USDT"),
+    ("H5b: H5 on more coins", "coin check 9 Nov 2026: none of SOL, TRX, ZEC, HYPE, DOGE, XMR passed the fixed coin rules",
+     "dropped without a backtest (docs/h5b-plan.md); H5 carries on unchanged"),
 )
 FORWARD_MIN_TRADES, FORWARD_MIN_DAYS = 30, 365
 

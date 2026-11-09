@@ -13,6 +13,9 @@ Also required (design package, "Robustness" and "Baselines"):
 7. the strategy beats random entries with the same exits (above their 95th percentile).
 For a strategy that adds coins to one that passed (H5b, docs/h5b-plan.md), one more:
 8. the new coins earn their place: out of sample, with doubled costs, their trades together make money.
+H6 (docs/h6-plan.md) also raises check 7 to the 99th percentile and adds:
+9. better than holding the coins: compounded over the test windows, the out-of-sample return beats an
+   equal-weight buy-and-hold of the same coins (bought at each window's start), with a smaller worst drawdown.
 The holdout was step 3 and is spent (H2 used it), so the verdict is at most "passes
 walk-forward"; the next test is a forward test on new prices, if Sultan approves one
 (docs/h2b-plan.md). The best return is never a criterion.
@@ -44,6 +47,7 @@ from bot.strategies.random_entry import RandomEntry
 MIN_TRADES = 100
 COLLAPSE_SHARE = Decimal("0.5")
 RANDOM_PERCENTILE = Decimal("0.95")
+H6_RANDOM_PERCENTILE = Decimal("0.99")      # docs/h6-plan.md check 7: the 11th strategy backtested, so a higher bar
 
 
 @dataclass(frozen=True)
@@ -74,8 +78,10 @@ class StrategyEvaluation:
     by_coin: dict[str, Decimal]
     by_month: dict[str, Decimal]
     checks: list[Check] = field(default_factory=list)
-    new_coins: tuple[str, ...] = ()                       # check 8 runs only when set (H5b)
+    new_coins: tuple[str, ...] = ()                       # check 8 runs only when set (H5b, H6)
     oos_doubled_by_coin: dict[str, Decimal] = field(default_factory=dict)
+    random_percentile: Decimal = RANDOM_PERCENTILE        # check 7's bar (H6: 0.99)
+    hold: dict[str, Decimal] | None = None                # check 9 runs only when set (H6)
 
     @property
     def passes_walk_forward(self) -> bool:
@@ -89,7 +95,8 @@ def _expectancy(trades: list[ClosedTrade]) -> Decimal | None:
 def evaluate(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[str, SymbolRules], cfg: AppConfig,
              cost: CostModel = CostModel(), random_runs: int = 50, progress=None,
              ws: list[Window] | None = None, corr_groups: dict[str, str] | None = None,
-             new_coins: list[str] | None = None) -> StrategyEvaluation:
+             new_coins: list[str] | None = None, random_percentile: Decimal = RANDOM_PERCENTILE,
+             hold_benchmark: bool = False) -> StrategyEvaluation:
     say = progress or (lambda msg: None)
     wf = walk_forward(strategy, candles, rules, cfg, cost, progress=say, ws=ws, corr_groups=corr_groups)
     oos = [t for r in wf for t in r.edge.trades]
@@ -128,9 +135,34 @@ def evaluate(strategy: Strategy, candles: dict[str, list[Candle]], rules: dict[s
         full_deployed_halt_ms=full_dep_res.drawdown_halt_ms, full_drawdown_events=len(full_edge_res.drawdown_events),
         sensitivity=sensitivity, per_coin=per_coin, regimes=regime_breakdown(full_edge_res.trades, candles),
         random_expectancies=rand, by_coin=dict(by_coin), by_month=dict(sorted(by_month.items())),
-        new_coins=tuple(new_coins or ()), oos_doubled_by_coin=dict(dbl_by_coin))
+        new_coins=tuple(new_coins or ()), oos_doubled_by_coin=dict(dbl_by_coin),
+        random_percentile=D(random_percentile),
+        hold=hold_comparison(wf, candles, cfg, cost) if hold_benchmark else None)
     ev.checks = checks(ev, cfg)
     return ev
+
+
+def hold_comparison(wf: list[WindowResult], candles: dict[str, list[Candle]], cfg: AppConfig,
+                    cost: CostModel) -> dict[str, Decimal]:
+    """Check 9's figures: the strategy's out-of-sample windows (edge measurement) against an equal-weight
+    buy-and-hold of the same coins, bought at each test window's start with the same costs. Returns are
+    compounded over the windows; the drawdown is the worst single window's."""
+    from bot.backtest.benchmarks import rebalanced
+    from bot.backtest.metrics import compute
+    weight = D(1) / len(candles)
+    s_ret, h_ret, s_dd, h_dd = D(1), D(1), ZERO, ZERO
+    for r in wf:
+        m = r.metrics["edge"]
+        s_ret *= m.end_equity / m.start_equity
+        s_dd = max(s_dd, m.max_drawdown)
+        start = m.start_equity
+        eq = rebalanced(candles, {s: weight for s in candles}, cfg, cost, r.window.test_start, r.window.test_end,
+                        start, monthly=False)
+        if eq:
+            hm = compute(eq, start, r.window.test_start)
+            h_ret *= hm.end_equity / start
+            h_dd = max(h_dd, hm.max_drawdown)
+    return {"strategy_return": s_ret - 1, "hold_return": h_ret - 1, "strategy_drawdown": s_dd, "hold_drawdown": h_dd}
 
 
 def _with_symbols(strategy: Strategy, symbols: list[str]) -> Strategy:
@@ -170,18 +202,25 @@ def checks(ev: StrategyEvaluation, cfg: AppConfig) -> list[Check]:
     out.append(Check("Robust: no setting moved 20% collapses the result", base is not None and base > 0 and not collapsed,
                      "no collapse" if not collapsed and base and base > 0 else
                      ("base expectancy not positive" if not base or base <= 0 else "collapses at " + ", ".join(collapsed))))
+    nth = f"{ev.random_percentile * 100:.0f}th percentile"
     if ev.random_expectancies and base is not None:
-        p95 = percentile(ev.random_expectancies, RANDOM_PERCENTILE)
-        out.append(Check("Beats random entries with the same exits (95th percentile)", base > p95,
-                         f"{_usdt(base)} vs random 95th percentile {_usdt(p95)} per trade"))
+        bar = percentile(ev.random_expectancies, ev.random_percentile)
+        out.append(Check(f"Beats random entries with the same exits ({nth})", base > bar,
+                         f"{_usdt(base)} vs random {nth} {_usdt(bar)} per trade"))
     else:
-        out.append(Check("Beats random entries with the same exits (95th percentile)", False, "not enough trades"))
+        out.append(Check(f"Beats random entries with the same exits ({nth})", False, "not enough trades"))
     if ev.new_coins:
         traded = [s for s in ev.new_coins if s in ev.oos_doubled_by_coin]
         new_pnl = sum((ev.oos_doubled_by_coin[s] for s in traded), ZERO)
         each = ", ".join(f"{s} {_usdt(ev.oos_doubled_by_coin[s])}" for s in traded)
         out.append(Check("The new coins earn their place (out of sample, doubled costs)", bool(traded) and new_pnl > 0,
                          f"{_usdt(new_pnl)} together ({each})" if traded else "no trades on the new coins"))
+    if ev.hold is not None:
+        h = ev.hold
+        out.append(Check("Better than holding the same coins (return and drawdown, out of sample)",
+                         h["strategy_return"] > h["hold_return"] and h["strategy_drawdown"] < h["hold_drawdown"],
+                         f"return {_pc(h['strategy_return'])} vs {_pc(h['hold_return'])}; worst window drawdown "
+                         f"{h['strategy_drawdown'] * 100:.1f}% vs {h['hold_drawdown'] * 100:.1f}%"))
     return out
 
 
@@ -259,8 +298,11 @@ def render(ev: StrategyEvaluation, meta: dict[str, Any], cfg: AppConfig) -> str:
     L += [f"| {k} | {n} | {_usdt(e)} |" for k, (n, e) in ev.regimes.items()]
     if ev.random_expectancies:
         q = [percentile(ev.random_expectancies, D(x)) for x in ("0.05", "0.5", "0.95")]
+        bar = ("" if ev.random_percentile == RANDOM_PERCENTILE else
+               f", {ev.random_percentile * 100:.0f}th percentile (the bar) "
+               f"{_usdt(percentile(ev.random_expectancies, ev.random_percentile))}")
         L += ["", f"## Random entries with the same exits ({len(ev.random_expectancies)} runs)", "",
-              f"Expectancy per trade: 5th percentile {_usdt(q[0])}, median {_usdt(q[1])}, 95th percentile {_usdt(q[2])}. "
+              f"Expectancy per trade: 5th percentile {_usdt(q[0])}, median {_usdt(q[1])}, 95th percentile {_usdt(q[2])}{bar}. "
               f"{ev.name} with default settings: {_usdt(ev.full_edge.expectancy)}."]
     L += ["", "## Cost model", ""] + [f"- {k}: {v}" for k, v in meta["cost_model"].items()]
     L += ["", "## Limits of simulation", ""] + [f"- {x}" for x in meta["limits_of_simulation"]]
@@ -294,5 +336,7 @@ def summary(ev: StrategyEvaluation) -> dict[str, Any]:
         "regimes": {k: {"trades": n, "expectancy": str(e)} for k, (n, e) in ev.regimes.items()},
         "random_expectancies": [str(x) for x in ev.random_expectancies],
         "new_coins": list(ev.new_coins),
+        "random_percentile": str(ev.random_percentile),
+        "hold": None if ev.hold is None else {k: str(v) for k, v in ev.hold.items()},
         "oos_doubled_by_coin": {k: str(v) for k, v in ev.oos_doubled_by_coin.items()},
     }
