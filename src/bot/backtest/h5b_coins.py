@@ -89,7 +89,7 @@ def _group(r: CoinResult, cfg) -> str:
 
 
 def decide(venue: SymbolLister, data_dir: Path, cfg, operator: str,
-           available: Callable[[], int | None] = available_memory_mb,
+           available: Callable[[], int | None] | None = None,
            now: Callable[[], float] = time.time, progress=None) -> dict[str, Any]:
     say = progress or (lambda m: None)
     data_dir = Path(data_dir)
@@ -105,7 +105,7 @@ def decide(venue: SymbolLister, data_dir: Path, cfg, operator: str,
     if tuple(u["symbols"]) != BASE or any(u["groups"].get(s) != g for s, g in BASE_GROUPS.items()):
         raise H5bCoinsError(f"the screen result does not match H5's coins and groups ({u['symbols']}); "
                             f"H5b starts from exactly {', '.join(BASE)}")
-    free = available()
+    free = (available or available_memory_mb)()        # looked up at call time (tests replace it)
     if free is None:
         raise H5bCoinsError("cannot read the available memory (/proc/meminfo), so nothing can be decided")
     folder = data_dir / FOLDER
