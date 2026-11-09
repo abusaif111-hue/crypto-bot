@@ -17,7 +17,7 @@
     bot live check | baseline | reconcile | start | run | status | pending | resume | block   (REAL money)
     bot paper run | status | resume | block | trade      (paper trading, simulated money only)
     bot forward start | run | status | report | resume | block   (the H2b forward test, simulated money)
-    bot backtest screen | fetch | baselines | run | h5b-coins   (coin screen, history, baselines, strategies H1-H3, H2b, H4, H5, H5b)
+    bot backtest screen | fetch | baselines | run | h5b-coins | h6-coins   (coin screen, history, baselines, H1-H3, H2b, H4, H5, H5b, H6)
     bot backtest h4-memory                                (once: H4 on four coins or BTC/ETH only, by measured memory)
     bot backtest holdout                                  (the one-time holdout test; Sultan only)
 
@@ -1559,7 +1559,21 @@ def _backtest_fetch(args: argparse.Namespace, make_exchange=None) -> int:
     data_dir = Path(os.path.expanduser(args.data_dir))
     symbols = args.symbols or cfg.universe
     end_ms = None
-    if getattr(args, "h5b", False):
+    if getattr(args, "h6", False):
+        # H6's extra coins only, and only up to the spent holdout's start (docs/h6-plan.md, section 2)
+        from bot.backtest import h6_coins
+        if args.interval != h6_coins.INTERVAL:
+            print("Error: H6 uses 4h candles (--interval 4h)", file=sys.stderr)
+            return 2
+        try:
+            symbols, end_ms = h6_coins.load(data_dir)["extra_coins"], h6_coins.research_end_ms()
+        except h6_coins.H6CoinsError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 2
+        if not symbols:
+            print("No extra coin joined H6: it runs on BTC, ETH, XRP and BNB, which are already downloaded.")
+            return 0
+    elif getattr(args, "h5b", False):
         # H5b's new coins only, and only up to the spent holdout's start (docs/h5b-plan.md, section 3)
         from bot.backtest import h5b_coins
         if args.interval != h5b_coins.INTERVAL:
@@ -1599,7 +1613,7 @@ def _backtest_fetch(args: argparse.Namespace, make_exchange=None) -> int:
         except Exception as e:
             ok = False
             print(f"{symbol} {args.interval}: FAILED: {e}", file=sys.stderr)
-    print(f"Saved in {data_dir}. " + ("For H5b nothing from 2025-10-01 on was downloaded (the holdout is spent)."
+    print(f"Saved in {data_dir}. " + ("For H5b and H6 nothing from 2025-10-01 on was downloaded (the holdout is spent)."
                                       if end_ms is not None else
                                       "The holdout (from 2025-10-01) is stored but stays locked."))
     return 0 if ok else 4
@@ -1669,7 +1683,7 @@ def _backtest_baselines(args: argparse.Namespace, out=None) -> int:
     return 0
 
 
-STRATEGIES = ("H1", "H2", "H3", "H2b", "H4", "H5", "H5b")
+STRATEGIES = ("H1", "H2", "H3", "H2b", "H4", "H5", "H5b", "H6")
 DEFAULT_RUN = ("H1", "H2", "H3", "H2b")       # H4 runs on its own: 1h candles and its own coins (docs/h4-plan.md)
 HOLDOUT_STRATEGIES = ("H1", "H2", "H3")      # H2b, H4 and H5 were designed after the holdout was seen
 
@@ -1684,13 +1698,16 @@ def _make_strategy(name: str, symbols: list[str]):
 
     if name == "H5b":                   # H5's own class, unchanged, on more coins (docs/h5b-plan.md)
         return DailyBreakout(symbols, name="H5b")
+    if name == "H6":
+        from bot.strategies.h6_rotation import WeeklyRotation
+        return WeeklyRotation(symbols)
     return {"H1": TrendBreakout, "H2": TimeSeriesMomentum, "H3": RangeMeanReversion,
             "H2b": BlendedMomentum, "H4": TrendPullback, "H5": DailyBreakout}[name](symbols)
 
 
 def _backtest_run(args: argparse.Namespace, out=None) -> int:
     """Walk-forward and robustness tests of H1-H3, H2b and H4 on the research period. The holdout stays locked."""
-    from bot.backtest import h4_coins, h5b_coins, history, report, selection
+    from bot.backtest import h4_coins, h5b_coins, h6_coins, history, report, selection
     from bot.backtest.universe import available_memory_mb, memory_needed_mb
 
     data_dir = Path(os.path.expanduser(args.data_dir))
@@ -1704,9 +1721,27 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
         print("Error: run H5b on its own (--strategy H5b): its coins come from bot backtest h5b-coins",
               file=sys.stderr)
         return 2
-    new_coins = None
+    h6 = "H6" in args.strategy
+    if h6 and list(args.strategy) != ["H6"]:
+        print("Error: run H6 on its own (--strategy H6): its coins come from bot backtest h6-coins", file=sys.stderr)
+        return 2
+    new_coins, extra = None, {}
     try:
-        if h5b:
+        if h6:
+            # the coins come only from the one-time coin check (docs/h6-plan.md, section 2)
+            rec = h6_coins.load(data_dir)
+            cfg = h6_coins.backtest_config(load_config(args.config), rec)
+            symbols, corr_groups, interval = list(rec["coins"]), rec["groups"], h6_coins.INTERVAL
+            # the plan's stricter rules: random entries at the 99th percentile; check 8 on the extra coins
+            # (when any joined); check 9 against holding the same coins
+            extra = {"random_percentile": selection.H6_RANDOM_PERCENTILE, "hold_benchmark": True}
+            if rec["extra_coins"]:
+                extra["new_coins"] = list(rec["extra_coins"])
+            desc = "; ".join(f"{s} ({corr_groups[s]})" for s in symbols) + \
+                (f" (extra coins {', '.join(rec['extra_coins'])} with 2.0% stop slippage" if rec["extra_coins"]
+                 else " (no extra coin joined") + f"; coin check of {rec['decided_at']})"
+            need = memory_needed_mb(len(symbols))
+        elif h5b:
             # the coins come only from the one-time coin check (docs/h5b-plan.md, section 3)
             rec = h5b_coins.load(data_dir)
             if not rec["new_coins"]:
@@ -1740,7 +1775,7 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
             return 2
         candles = {s: history.load(data_dir, s, interval) for s in symbols}
         rules = {s: history.load_rules(data_dir, s) for s in symbols}
-    except (history.DataError, h4_coins.H4CoinsError, h5b_coins.H5bCoinsError) as e:
+    except (history.DataError, h4_coins.H4CoinsError, h5b_coins.H5bCoinsError, h6_coins.H6CoinsError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
 
@@ -1759,7 +1794,7 @@ def _backtest_run(args: argparse.Namespace, out=None) -> int:
             f"then robustness checks)")
         ev = selection.evaluate(strategy, candles, rules, cfg, cost,
                                 random_runs=args.random_runs, progress=say, corr_groups=corr_groups,
-                                **({"new_coins": new_coins} if new_coins else {}))
+                                **({"new_coins": new_coins} if new_coins else {}), **extra)
         text = selection.render(ev, meta, cfg)
         folder = report.write_files(Path(os.path.expanduser(args.reports_dir)), f"strategy-{name}", text,
                                     {"meta": meta, **selection.summary(ev)})
@@ -1817,6 +1852,33 @@ def _backtest_h5b_coins(args: argparse.Namespace, make_exchange=None, out=None) 
     nxt = ("Next: bot backtest fetch --h5b, then bot backtest run --strategy H5b" if rec["new_coins"] else
            "Nothing to test.")
     out.write(f"Recorded in {data_dir / h5b_coins.DECISION_FILE} (never overwritten). {nxt}\n")
+    return 0
+
+
+def _backtest_h6_coins(args: argparse.Namespace, make_exchange=None, out=None) -> int:
+    """Once: H6's coins (docs/h6-plan.md, section 2; screen waived by Sultan's decision 1); never re-run."""
+    from bot.backtest import h6_coins, history
+    from bot.exchange.binance import BinanceReadOnly
+
+    data_dir = Path(os.path.expanduser(args.data_dir))
+    out = out or sys.stdout
+
+    def say(msg):
+        out.write(f"  {time.strftime('%H:%M:%S', time.gmtime())} {msg}\n")
+        out.flush()
+
+    try:
+        venue = (make_exchange or BinanceReadOnly)(environment="live")
+        rec = h6_coins.decide(venue, data_dir, load_config(args.config), args.operator, progress=say)
+    except (history.DataError, h6_coins.H6CoinsError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:
+        print(f"Error: the coin check failed and nothing was recorded: {type(e).__name__}: {e}", file=sys.stderr)
+        return 4
+    out.write(h6_coins.render(rec))
+    out.write(f"Recorded in {data_dir / h6_coins.DECISION_FILE} (never overwritten). "
+              f"Next: bot backtest fetch --h6, then bot backtest run --strategy H6\n")
     return 0
 
 
@@ -2054,13 +2116,15 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--screened", action="store_true", help="the coins picked by bot backtest screen")
     bf.add_argument("--h5b", action="store_true",
                     help="H5b's new coins from bot backtest h5b-coins, research period only")
+    bf.add_argument("--h6", action="store_true",
+                    help="H6's extra coins from bot backtest h6-coins, research period only")
     bb = bsub.add_parser("baselines", help="cash, buy-and-hold, 50/50 and random entries on the research period")
     bb.add_argument("--seeds", type=int, default=200, help="number of random-entry runs")
     bb.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     br = bsub.add_parser("run", help="walk-forward and robustness tests of strategies H1-H3, H2b (research period)")
     br.add_argument("--strategy", nargs="+", choices=STRATEGIES, default=list(DEFAULT_RUN),
                     help="default: H1 H2 H3 H2b; H4 runs alone, on the coins from bot backtest h4-memory; "
-                         "H5 (docs/h5-plan.md) with --screened; H5b alone, on the coins from bot backtest h5b-coins")
+                         "H5 (docs/h5-plan.md) with --screened; H5b and H6 alone, on the coins from bot backtest h5b-coins / h6-coins")
     br.add_argument("--random-runs", type=int, default=50, help="random-entry runs with the same exits")
     br.add_argument("--reports-dir", default=DEFAULT_REPORTS_DIR)
     br.add_argument("--screened", action="store_true",
@@ -2069,6 +2133,8 @@ def main(argv: list[str] | None = None) -> int:
     bm.add_argument("--operator", required=True)
     b5 = bsub.add_parser("h5b-coins", help="once: which of Sultan's candidates join H5b (docs/h5b-plan.md rules)")
     b5.add_argument("--operator", required=True)
+    b6 = bsub.add_parser("h6-coins", help="once: H6's coins (docs/h6-plan.md; screen waived by Sultan's decision 1)")
+    b6.add_argument("--operator", required=True)
     bh = bsub.add_parser("holdout", help="the one-time holdout test (Sultan only; recorded; a second run is VOID)")
     bh.add_argument("--strategy", required=True, choices=HOLDOUT_STRATEGIES)
     bh.add_argument("--operator", required=True)
@@ -2083,6 +2149,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "backtest":
             return {"screen": _backtest_screen, "fetch": _backtest_fetch, "baselines": _backtest_baselines,
                     "run": _backtest_run, "h4-memory": _backtest_h4_memory, "h5b-coins": _backtest_h5b_coins,
+                    "h6-coins": _backtest_h6_coins,
                     "holdout": _backtest_holdout}[args.backtest_cmd](args)
         if args.cmd == "forward":
             return {"start": _forward_start, "run": _forward_run, "status": _forward_status, "report": _forward_report,

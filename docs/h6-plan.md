@@ -1,9 +1,9 @@
 # H6 plan: weekly rotation into the strongest coins
 
-Status: **DRAFT, written 9 Nov 2026, waiting for Sultan's approval (section 8).** Written after the H5b
-coin check (9 Nov 2026), which showed which coins are volatile or thin, but before any backtest of H6.
-Once approved, this document is frozen: changing a coin, a setting or a pass rule after that makes it
-a new strategy.
+Status: **APPROVED by Sultan on 9 Nov 2026 ("approve H6 with all coins": decisions 1, 2 and 3 in
+section 8, with SOL, DOGE, TRX and ZEC included). Frozen.** Written after the H5b coin check (9 Nov
+2026), which showed which coins are volatile or thin, but before any backtest of H6. Changing a coin, a
+setting or a pass rule after this makes it a new strategy.
 
 ## 1. Why H6
 
@@ -121,7 +121,7 @@ If any check fails, H6 is dropped, not tuned and re-run. H5 and H2b carry on unc
 - SOL, DOGE, ZEC and TRX can gap past their stops. A gap loses more than 0.25% of the account.
 - Nothing here is a result. Whether H6 works after costs is unknown until the backtest runs on the server.
 
-## 8. Decisions for Sultan
+## 8. Decisions for Sultan (all three approved on 9 Nov 2026, the four coins included)
 
 1. **Include SOL, DOGE, TRX and ZEC** although they failed the design package's coin screens, with the
    extra care in section 3 (or leave them out: then H6 runs on BTC, ETH, XRP and BNB only).

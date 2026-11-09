@@ -729,6 +729,22 @@ It must pass H5's 7 checks plus one more: the new coins' trades, out of sample w
 together. A failure drops H5b and H5 carries on unchanged. Nothing trades H5b until it passes and Sultan approves
 the next step (testnet first).
 
+## H6: weekly rotation into the strongest coins (backtest stage)
+
+H6 (`docs/h6-plan.md`, approved 9 Nov 2026 with all coins) holds, each week, the 2 strongest coins that are in an
+uptrend, among BTC, ETH, XRP, BNB, SOL, DOGE, TRX and ZEC (the last four by Sultan's decision, with a 2.0% stop
+slippage allowance). As the bot user:
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot backtest h6-coins --operator Sultan    # once: which coins are tradeable (never re-run)
+.venv/bin/bot backtest fetch --h6                                       # the extra coins' 4h history, up to 2025-10-01
+.venv/bin/bot backtest run --strategy H6                                # the backtest (an hour or more)
+```
+
+It must pass stricter rules than H5: random entries beaten at the 99th percentile, the four extra coins profitable
+together with doubled costs, and better than simply holding the same coins (return and drawdown). A failure drops
+H6. Nothing trades H6 until it passes and Sultan approves the next step (testnet first).
+
 ## How a trade is sized
 
 1. Entry is assumed to fill slightly worse than planned (0.05%), and the stop
