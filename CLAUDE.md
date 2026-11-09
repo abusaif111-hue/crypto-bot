@@ -136,6 +136,15 @@ bot paper status
    expiry, dropped when entries are blocked, never for a coin already held). H5 runs in the same runner and ledger
    as H2b, only after Sultan's `bot testnet|live h5-enable --capital` (`h5.json`), sized on at most that capital
    (`strategy_caps`, smaller only). Testnet first; never switch H5 on live for Sultan.
+   H5b (`docs/h5b-plan.md`, approved by Sultan on 9 Nov 2026, frozen): H5's rules and code unchanged on more coins.
+   Candidates fixed (SOL, TRX, ZEC, HYPE, DOGE, XMR; Sultan's list); coin rules fixed before any price was seen
+   (Binance Spot USDT pair trading; 4h history from 2021-10-01 or earlier; the screen's stability and liquidity
+   rules over 2022-10 to 2025-10; measured groups; memory: least-traded new coins left out first). The check is
+   `bot backtest h5b-coins` (`bot.backtest.h5b_coins`, written once to `h5b-coins.json`, never overwritten or
+   re-run); `bot backtest fetch --h5b` downloads the new coins only up to 2025-10-01; `bot backtest run --strategy
+   H5b` runs alone with H5's 7 checks plus check 8 (the new coins' out-of-sample P&L with doubled costs is
+   positive). A failure drops H5b (not tuned or re-run) and H5 carries on. A pass leads to testnet, then H5b
+   replaces H5 on live only by Sultan's switch (not built yet). Never change `h5_breakout.py` for H5b.
    H2c research protocol (`docs/h2c-plan.md`): stage A (the document only) approved by Sultan on 26 Oct 2026 and
    frozen at revision 7; never edit it (any change is a new exploratory experiment with its own document). Stage B
    is **not** approved: build no H2c code, run no coin screen, download no prices, select no coins and run no

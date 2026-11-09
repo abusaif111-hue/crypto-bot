@@ -714,6 +714,21 @@ testnet status                                        # shows 'H5: on' and today
 Testnet first; the live switch (`live h5-enable`) is Sultan's own step. At 100 USDT, orders whose stop is
 more than about 3-4% away are below Binance's 5 USDT minimum and are refused (correctly).
 
+## H5b: H5 on more coins (backtest stage)
+
+H5b (`docs/h5b-plan.md`, approved 9 Nov 2026) is H5's rules and code, unchanged, on H5's four coins plus those of
+Sultan's candidates (SOL, TRX, ZEC, HYPE, DOGE, XMR) that pass fixed coin rules. As the bot user:
+
+```bash
+cd ~/crypto-bot && .venv/bin/bot backtest h5b-coins --operator Sultan   # once: which candidates join (never re-run)
+.venv/bin/bot backtest fetch --h5b                                      # the new coins' 4h history, up to 2025-10-01
+.venv/bin/bot backtest run --strategy H5b                               # the backtest (an hour or more)
+```
+
+It must pass H5's 7 checks plus one more: the new coins' trades, out of sample with doubled costs, make money
+together. A failure drops H5b and H5 carries on unchanged. Nothing trades H5b until it passes and Sultan approves
+the next step (testnet first).
+
 ## How a trade is sized
 
 1. Entry is assumed to fill slightly worse than planned (0.05%), and the stop
