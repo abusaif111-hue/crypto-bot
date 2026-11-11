@@ -60,6 +60,8 @@ RESEARCH = (
      "passed walk-forward (31 Oct 2026); next: held orders on the testnet, then live with 100 USDT"),
     ("H5b: H5 on more coins", "coin check 9 Nov 2026: none of SOL, TRX, ZEC, HYPE, DOGE, XMR passed the fixed coin rules",
      "dropped without a backtest (docs/h5b-plan.md); H5 carries on unchanged"),
+    ("H6 weekly rotation (8 coins)", "walk-forward 132 trades, -0.22 USDT per trade (-2.95 with doubled costs); "
+     "failed 6 of 9 checks", "did not qualify (11 Nov 2026); rejected, not tuned or re-run"),
 )
 FORWARD_MIN_TRADES, FORWARD_MIN_DAYS = 30, 365
 

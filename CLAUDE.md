@@ -160,6 +160,12 @@ bot paper status
    check 8 on the four extra coins, and check 9 (beats equal-weight holding of the same coins in return AND worst
    window drawdown). A failure drops H6 (not tuned or re-run). A pass leads to testnet, then live only by Sultan's
    switch and capital (not built). Never lower the extra coins' 2.0% allowance.
+   **H6 did not qualify on walk-forward (11 Nov 2026; report `~/backtests/20261111-085148-strategy-H6`) and is
+   rejected:** 132 out-of-sample trades, -0.22 USDT per trade (-2.95 with doubled costs); failed checks 1, 4, 5, 6,
+   8 (extra coins -256.35 together: DOGE -141.95, TRX -146.09, ZEC -1.20, SOL +32.90) and 9 (+0.2% vs +193.0% for
+   holding, drawdown 2.4% vs 63.9%); passed 2, 3 and 7 (+1.35 vs 99th percentile +1.29, 50 runs). All four extra
+   coins joined (each its own group). Per its plan it is not tuned or re-run and gets no testnet or forward test;
+   never re-test it with changed settings, coins or rules.
    H2c research protocol (`docs/h2c-plan.md`): stage A (the document only) approved by Sultan on 26 Oct 2026 and
    frozen at revision 7; never edit it (any change is a new exploratory experiment with its own document). Stage B
    is **not** approved: build no H2c code, run no coin screen, download no prices, select no coins and run no
